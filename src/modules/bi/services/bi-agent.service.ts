@@ -71,7 +71,11 @@ export class BiAgentService {
       return { kind: 'greeting', out };
     }
 
-    const { bdd } = await this.schema.getBddJson();
+    const maxPast = this.chatHistory.getMaxMessages();
+    const [{ bdd }, past] = await Promise.all([
+      this.schema.getBddJson(),
+      this.chatHistory.loadForSession(input.chatId, maxPast),
+    ]);
     const formuleKpi = this.prompts.getFormuleKpiTemplate();
     const system = this.prompts.buildSystemMessage(bdd, formuleKpi);
     const geminiModel: string =
@@ -89,8 +93,6 @@ export class BiAgentService {
       responseFormat: biAgentOutputSchema,
     });
     const line = `(date now : ${new Date().toISOString()}) , ${input.message}`;
-    const maxPast = this.chatHistory.getMaxMessages();
-    const past = await this.chatHistory.loadForSession(input.chatId, maxPast);
     const baseMessages: BaseMessage[] = past.map((p) => {
       if (p.role === 'user') {
         return new HumanMessage(p.text);
@@ -121,7 +123,7 @@ export class BiAgentService {
     }
     const res = (await ctx.agent.invoke(
       { messages: ctx.baseMessages },
-      { recursionLimit: 40 },
+      { recursionLimit: this.agentRecursionLimit() },
     )) as { structuredResponse?: BiAgentOutput; messages?: unknown[] };
     const sr = res.structuredResponse;
     if (!sr) {
@@ -156,7 +158,10 @@ export class BiAgentService {
     };
     const stream = await ctx.agent.stream(
       { messages: ctx.baseMessages },
-      { streamMode: 'values' as const, recursionLimit: 40 },
+      {
+        streamMode: 'values' as const,
+        recursionLimit: this.agentRecursionLimit(),
+      },
     );
     const inputCount = ctx.baseMessages.length;
     let lastIndex = inputCount;
@@ -222,6 +227,19 @@ export class BiAgentService {
     } & BiAgentOutput;
     await this.persistTurn(input.chatId, ctx.userText, out);
     yield { t: 'done', ...out };
+  }
+
+  /** Nombre max de tours outil + modèle (limite LangGraph). Réduire peut raccourcir les cas extrêmes. */
+  private agentRecursionLimit(): number {
+    const raw = this.config.get<string>('AGENT_RECURSION_LIMIT');
+    if (raw == null || String(raw).trim() === '') {
+      return 40;
+    }
+    const n = parseInt(String(raw), 10);
+    if (!Number.isFinite(n) || n < 4) {
+      return 40;
+    }
+    return Math.min(80, n);
   }
 
   private cleanHtml(raw: string): string {

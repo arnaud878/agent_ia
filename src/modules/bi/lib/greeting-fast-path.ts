@@ -49,8 +49,8 @@ export function isSimpleGreeting(message: string): boolean {
 export function buildGreetingResponse(): { output: string } & BiAgentOutput {
   const html = `<div style="font-family:system-ui,Segoe UI,sans-serif;max-width:42rem;color:#e5e7eb;background:#111827;padding:1rem 1.25rem;border-radius:10px;border:1px solid #374151;line-height:1.5;">
 <p style="margin:0 0 0.6rem 0;font-size:1.05rem;font-weight:600;">Bonjour !</p>
-<p style="margin:0;font-size:0.95rem;opacity:0.95;">Je suis l’assistant analytique des données (production, irradiance, sites, carburant). Dès que vous posez une question précise, j’interroge la base et je vous réponds avec des chiffres et des graphiques.</p>
-<p style="margin:0.75rem 0 0 0;font-size:0.85rem;opacity:0.8;">Exemple : « Quelle production sur le site X la semaine dernière ? »</p>
+<p style="margin:0;font-size:0.95rem;opacity:0.95;">Je suis l’assistant analytique des données. Dès que vous posez une question précise, j’interroge la base et je vous réponds avec des chiffres et des graphiques.</p>
+<p style="margin:0.75rem 0 0 0;font-size:0.85rem;opacity:0.8;">...? »</p>
 </div>`;
 
   return {

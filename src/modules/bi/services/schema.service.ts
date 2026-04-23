@@ -50,6 +50,12 @@ export type BddSchema = Record<
 export class SchemaService implements OnModuleDestroy {
   private pool: Pool;
 
+  /** Cache du JSON « Info BDD » (metadata) : évite une requête `information_schema` à chaque tour. */
+  private bddJsonCache: {
+    data: { bdd: { json: BddSchema } };
+    expiresAt: number;
+  } | null = null;
+
   constructor(private readonly config: ConfigService) {
     const url = this.config.getOrThrow<string>('DATABASE_URL');
     this.pool = new Pool({ connectionString: url, max: 10 });
@@ -76,8 +82,21 @@ export class SchemaService implements OnModuleDestroy {
 
   /**
    * Reconstruit l’objet `bdd: { json: schema }` comme le n8n "Info BDD".
+   * Mis en cache mémoire selon `BDD_SCHEMA_CACHE_TTL_SECONDS` (0 = pas de cache).
    */
   async getBddJson(): Promise<{ bdd: { json: BddSchema } }> {
+    const ttlSec = this.parseTtlSeconds(
+      this.config.get<string>('BDD_SCHEMA_CACHE_TTL_SECONDS'),
+    );
+    const now = Date.now();
+    if (
+      ttlSec > 0 &&
+      this.bddJsonCache &&
+      now < this.bddJsonCache.expiresAt
+    ) {
+      return this.bddJsonCache.data;
+    }
+
     const res = await this.pool.query<{
       table_name: string;
       column_name: string;
@@ -88,7 +107,29 @@ export class SchemaService implements OnModuleDestroy {
       foreign_table_name: string | null;
       foreign_column_name: string | null;
     }>(SCHEMA_QUERY);
-    return { bdd: { json: this.mapRowsToBdd(res.rows) } };
+    const data: { bdd: { json: BddSchema } } = {
+      bdd: { json: this.mapRowsToBdd(res.rows) },
+    };
+    if (ttlSec > 0) {
+      this.bddJsonCache = {
+        data,
+        expiresAt: Date.now() + ttlSec * 1000,
+      };
+    } else {
+      this.bddJsonCache = null;
+    }
+    return data;
+  }
+
+  private parseTtlSeconds(raw: string | undefined): number {
+    if (raw == null || String(raw).trim() === '') {
+      return 300;
+    }
+    const n = parseInt(String(raw), 10);
+    if (!Number.isFinite(n) || n < 0) {
+      return 300;
+    }
+    return n;
   }
 
   private mapRowsToBdd(
