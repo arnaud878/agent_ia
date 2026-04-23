@@ -1,0 +1,25 @@
+# Documentation des Formules KPI - Système Solaire et Carburant
+
+## 1. Données Solaire
+
+### Irradiation durant une heure
+Formule : Irradiation_h = Σ_i (Irr_{h,i} / G) × (5/60)
+Intervalle i : {0,5,...,55} minutes. Irradiation_h en kWh/m². Irr_{h,i} en W/m². G = 1000 W/m² (STC).
+
+### Irradiation durant une journée
+Irradiation_j = Σ_{h=0..23} Irradiation_h (kWh/m²). Ne considérer que les relevés où Irr > 0.
+
+## 2. Énergie réelle produite
+
+### Par heure
+E_h = Σ_i P_{h,i} × (5/60) avec P en kW.
+
+### Par jour
+E_j = Σ_h E_h (kWh). Exclure les points où puissance_active <= 0 pour la production "brute" utile selon règles métier.
+
+## 3. Performance Ratio (PR)
+PR_p = E_p / (Puissance installée × Irradiation_p)
+E_p en kWh, Irradiation_p en kWh/m², puissance en kWc (depuis puissance_installee).
+
+## 4. Carburant
+Volume période : somme des volumes relevés sur la période (m³).
