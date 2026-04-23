@@ -1,18 +1,12 @@
-import {
-  Body,
-  Controller,
-  Logger,
-  Post,
-  Res,
-  UseGuards,
-} from '@nestjs/common';
+import { Body, Controller, Logger, Post, Res, UseGuards } from '@nestjs/common';
 import type { Response } from 'express';
-import { BiAgentService } from '../bi/bi-agent.service';
-import { ApiConfigGuard } from './api-config.guard';
+import {
+  BI_STREAM_VERSION_HEADER,
+  N8N_WEBHOOK_PATH_SEGMENT,
+} from '../../common/constants/bi-webhook';
+import { BiAgentService } from '../bi/services/bi-agent.service';
+import { ApiConfigGuard } from '../../common/guards/api-config.guard';
 import { WebhookBodyDto } from './dto/webhook-body.dto';
-
-/** Même path que le n8n Webhook (POST /webhook/<uuid path>). */
-const N8N_WEBHOOK_PATH = '5a2715bd-0b56-4e05-9c24-eb48e13c5d7a';
 
 @Controller('webhook')
 @UseGuards(ApiConfigGuard)
@@ -21,7 +15,7 @@ export class WebhookController {
 
   constructor(private readonly biAgent: BiAgentService) {}
 
-  @Post(N8N_WEBHOOK_PATH)
+  @Post(N8N_WEBHOOK_PATH_SEGMENT)
   async handle(@Body() body: WebhookBodyDto) {
     return this.biAgent.runChat({
       message: body.message,
@@ -32,7 +26,7 @@ export class WebhookController {
   /**
    * Même authentification et corps qu’en JSON, mais en NDJSON (une ligne JSON = un événement) pour l’avancement en direct.
    */
-  @Post(`${N8N_WEBHOOK_PATH}/stream`)
+  @Post(`${N8N_WEBHOOK_PATH_SEGMENT}/stream`)
   async handleStream(
     @Body() body: WebhookBodyDto,
     @Res({ passthrough: false }) res: Response,
@@ -40,8 +34,7 @@ export class WebhookController {
     res.setHeader('Content-Type', 'application/x-ndjson; charset=utf-8');
     res.setHeader('Cache-Control', 'no-cache, no-store');
     res.setHeader('X-Accel-Buffering', 'no');
-    /** Permet de vérifier que l’ancien binaire n’est pas exécuté (libellés d’étapes côté stream). */
-    res.setHeader('X-Bi-Stream-Version', '3');
+    res.setHeader('X-Bi-Stream-Version', BI_STREAM_VERSION_HEADER);
     try {
       for await (const ev of this.biAgent.streamChat({
         message: body.message,
@@ -52,8 +45,7 @@ export class WebhookController {
       res.end();
     } catch (e) {
       this.log.error(e);
-      const message =
-        e instanceof Error ? e.message : 'Erreur inconnue';
+      const message = e instanceof Error ? e.message : 'Erreur inconnue';
       if (!res.headersSent) {
         res.status(500);
       }

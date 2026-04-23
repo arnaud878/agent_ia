@@ -1,8 +1,8 @@
 import { Module } from '@nestjs/common';
-import { BiAgentService } from './bi-agent.service';
-import { BiPromptService } from './bi-prompt.service';
-import { ChatHistoryService } from './chat-history.service';
-import { SchemaService } from './schema.service';
+import { BiAgentService } from './services/bi-agent.service';
+import { BiPromptService } from './services/bi-prompt.service';
+import { ChatHistoryService } from './services/chat-history.service';
+import { SchemaService } from './services/schema.service';
 
 @Module({
   providers: [

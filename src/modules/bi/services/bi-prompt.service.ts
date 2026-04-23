@@ -9,9 +9,9 @@ export class BiPromptService {
 
   private readPromptFile(filename: string): string {
     const candidates = [
-      join(__dirname, 'prompts', filename),
-      join(process.cwd(), 'dist', 'bi', 'prompts', filename),
-      join(process.cwd(), 'src', 'bi', 'prompts', filename),
+      join(__dirname, '..', 'prompts', filename),
+      join(process.cwd(), 'dist', 'modules', 'bi', 'prompts', filename),
+      join(process.cwd(), 'src', 'modules', 'bi', 'prompts', filename),
     ];
     for (const p of candidates) {
       if (existsSync(p)) {

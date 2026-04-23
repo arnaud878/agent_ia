@@ -1,7 +1,7 @@
 import { tool } from '@langchain/core/tools';
 import { Parser } from 'expr-eval';
 import { z } from 'zod';
-import type { SchemaService } from './schema.service';
+import type { SchemaService } from '../services/schema.service';
 
 function ensureSelectReadOnly(sql: string): { sql: string; warning?: string } {
   const trimmed = sql.trim();

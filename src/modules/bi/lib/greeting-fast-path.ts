@@ -1,4 +1,4 @@
-import type { BiAgentOutput } from './bi-output.schema';
+import type { BiAgentOutput } from '../schemas/bi-output.schema';
 
 /**
  * Détecte une salutation courte, sans demande d’analyse (évite l’agent LLM).
@@ -37,7 +37,8 @@ export function isSimpleGreeting(message: string): boolean {
     return true;
   }
 
-  const twoWord = /^(bonjour|salut|hello|hi|hey|bonsoir) (tout le monde|à tous|la team|l’équipe|l\'équipe|monde)$/;
+  const twoWord =
+    /^(bonjour|salut|hello|hi|hey|bonsoir) (tout le monde|à tous|la team|l’équipe|l'équipe|monde)$/;
   if (twoWord.test(normalized)) {
     return true;
   }
