@@ -11,6 +11,7 @@ import { BiPromptService } from './bi-prompt.service';
 import { SchemaService } from './schema.service';
 import { buildBiTools } from './bi-tools';
 import { biAgentOutputSchema, type BiAgentOutput } from './bi-output.schema';
+import { buildGreetingResponse, isSimpleGreeting } from './greeting-fast-path';
 
 @Injectable()
 export class BiAgentService {
@@ -29,6 +30,11 @@ export class BiAgentService {
     message: string;
     chatId: string;
   }): Promise<{ output: string } & BiAgentOutput> {
+    if (isSimpleGreeting(input.message)) {
+      this.log.debug('Salutation détectée → réponse rapide (sans LLM)');
+      return buildGreetingResponse();
+    }
+
     const { bdd } = await this.schema.getBddJson();
     const formuleKpi = this.prompts.getFormuleKpiTemplate();
     const system = this.prompts.buildSystemMessage(bdd, formuleKpi);
