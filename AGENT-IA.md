@@ -106,13 +106,14 @@ flowchart TD
   A[Client POST /webhook/...] --> B{Header x-api-config = API_CONFIG_SECRET ?}
   B -->|Non| C[401 Unauthorized]
   B -->|Oui| D[BiAgentService.runChat]
-  D --> E[Charger schéma BDD + formules KPI]
+  D --> D1[Recharger l’historique n8n_chat_histories_v6 / session_id=chatId]
+  D1 --> E[Charger schéma BDD + formules KPI]
   E --> F[Construire prompt système: static + JSON schéma + KPI]
   F --> G[ChatGoogleGenerativeAI + outils: SQLExecutor, Think, calculator]
-  G --> H[Boucle agent: raisonne, appelle outils, reçoit résultats]
+  G --> H[Boucle agent: messages = historique + tour courant, raisonne, outils, résultats]
   H --> I{Sortie structurée Zod remplie ?}
   I -->|Non| J[500 Sortie structurée manquante]
-  I -->|Oui| K[Nettoyage HTML + retour JSON au client]
+  I -->|Oui| K[Persister user + assistant, nettoyage HTML, retour JSON]
 ```
 
 À l’**intérieur** de l’appel d’outils SQL, le flux est :
@@ -138,6 +139,9 @@ flowchart LR
 | `GEMINI_MODEL`      | Nom du modèle (ex. `gemini-3-flash-preview`) |
 | `API_CONFIG_SECRET` | Secret partagé pour l’en-tête `x-api-config` sur le webhook |
 | `PORT`              | Port d’écoute du serveur (défaut 3000) |
+| `CHAT_HISTORY_MAX_MESSAGES` | Nombre max de **messages** (lignes user/assistant) déjà enregistrés à recharger via `n8n_chat_histories_v6` pour le même `session_id` (`chatId`) — ex. 3 ou 4 (défaut 4) |
+
+**Persistance** : table `n8n_chat_histories_v6` (`session_id`, `message` jsonb `{"role","text"}`) ; après chaque réponse, enregistrement du tour user + texte d’aide-mémoire assistant (`resultatSQL` ou HTML dépouillé).
 
 ---
 
@@ -145,7 +149,7 @@ flowchart LR
 
 - **Quota / 429** : des erreurs *Too Many Requests* côté Google peuvent survenir ; ce n’est pas un défaut d’intégration application en soi, mais un plafond côté fournisseur.
 - **Tables couvertes** : seule la liste des quatre tables du `SCHEMA_QUERY` est exposée ; toute autre table est invisible pour l’agent.
-- **Histoire de conversation** : chaque requête webhook envoie aujourd’hui un seul `HumanMessage` (avec horodatage) — pas d’historique multi-tours implémenté dans le service, même si le DTO prévoit un champ `history` pour d’éventuelles extensions.
+- **Histoire côté client** : le DTO peut encore comporter un champ `history` — la **référence** d’historique est celle lue en base sur `chatId` (session), pas l’ancien `history` du client.
 
 ---
 

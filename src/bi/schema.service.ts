@@ -63,10 +63,14 @@ export class SchemaService implements OnModuleDestroy {
     return this.pool;
   }
 
-  /** Exécution bas niveau (outil SQL). */
+  /** Exécution bas niveau (outil SQL, paramètres optionnels $1, $2, …). */
   async executeQuery(
     sql: string,
+    params?: unknown[],
   ): Promise<QueryResult<Record<string, unknown>>> {
+    if (params && params.length > 0) {
+      return this.pool.query<Record<string, unknown>>(sql, params);
+    }
     return this.pool.query<Record<string, unknown>>(sql);
   }
 

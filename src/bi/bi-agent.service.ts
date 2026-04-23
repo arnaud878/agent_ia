@@ -4,9 +4,10 @@ import {
   Logger,
 } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
-import { HumanMessage } from '@langchain/core/messages';
+import { AIMessage, BaseMessage, HumanMessage } from '@langchain/core/messages';
 import { ChatGoogleGenerativeAI } from '@langchain/google-genai';
 import { createReactAgent } from '@langchain/langgraph/prebuilt';
+import { ChatHistoryService } from './chat-history.service';
 import { BiPromptService } from './bi-prompt.service';
 import { SchemaService } from './schema.service';
 import { buildBiTools } from './bi-tools';
@@ -21,6 +22,7 @@ export class BiAgentService {
     private readonly config: ConfigService,
     private readonly schema: SchemaService,
     private readonly prompts: BiPromptService,
+    private readonly chatHistory: ChatHistoryService,
   ) {}
 
   /**
@@ -32,7 +34,9 @@ export class BiAgentService {
   }): Promise<{ output: string } & BiAgentOutput> {
     if (isSimpleGreeting(input.message)) {
       this.log.debug('Salutation détectée → réponse rapide (sans LLM)');
-      return buildGreetingResponse();
+      const gr = buildGreetingResponse();
+      await this.persistTurn(input.chatId, input.message, gr);
+      return gr;
     }
 
     const { bdd } = await this.schema.getBddJson();
@@ -53,8 +57,17 @@ export class BiAgentService {
       responseFormat: biAgentOutputSchema,
     });
     const line = `(date now : ${new Date().toISOString()}) , ${input.message}`;
+    const maxPast = this.chatHistory.getMaxMessages();
+    const past = await this.chatHistory.loadForSession(input.chatId, maxPast);
+    const baseMessages: BaseMessage[] = past.map((p) => {
+      if (p.role === 'user') {
+        return new HumanMessage(p.text);
+      }
+      return new AIMessage(p.text);
+    });
+    baseMessages.push(new HumanMessage(line));
     const res = (await agent.invoke(
-      { messages: [new HumanMessage(line)] },
+      { messages: baseMessages },
       { recursionLimit: 40 },
     )) as { structuredResponse?: BiAgentOutput; messages?: unknown[] };
     const sr = res.structuredResponse;
@@ -64,10 +77,41 @@ export class BiAgentService {
       });
       throw new InternalServerErrorException('Sortie structurée manquante');
     }
-    return { output: this.cleanHtml(sr.html), ...sr };
+    const out = { output: this.cleanHtml(sr.html), ...sr };
+    await this.persistTurn(input.chatId, input.message, out);
+    return out;
   }
 
   private cleanHtml(raw: string): string {
     return raw.replace(/^```html\s*/i, '').replace(/\s*```$/g, '');
+  }
+
+  private assistantMemoryText(sr: BiAgentOutput, outputHtml: string): string {
+    const r = sr.resultatSQL?.trim();
+    if (r) {
+      return r.length > 12_000 ? r.slice(0, 12_000) + '…' : r;
+    }
+    const t = this.stripTags(outputHtml).replace(/\s+/g, ' ').trim();
+    if (t) {
+      return t.length > 4_000 ? t.slice(0, 4_000) + '…' : t;
+    }
+    return '—';
+  }
+
+  private stripTags(html: string): string {
+    return html.replace(/<[^>]+>/g, ' ');
+  }
+
+  private async persistTurn(
+    sessionId: string,
+    userText: string,
+    sr: BiAgentOutput,
+  ) {
+    const out = this.cleanHtml(sr.html);
+    await this.chatHistory.append(sessionId, { role: 'user', text: userText });
+    await this.chatHistory.append(sessionId, {
+      role: 'assistant',
+      text: this.assistantMemoryText(sr, out),
+    });
   }
 }
