@@ -1,4 +1,4 @@
-import { IsArray, IsOptional, IsString } from 'class-validator';
+import { IsArray, IsIn, IsOptional, IsString } from 'class-validator';
 
 export class WebhookBodyDto {
   @IsString()
@@ -17,4 +17,9 @@ export class WebhookBodyDto {
 
   @IsString()
   userId: string;
+
+  /** `quick` : réponse courte sans graphique ; `pro` : comportement complet (graphiques Chart.js). */
+  @IsOptional()
+  @IsIn(['quick', 'pro'])
+  responseMode?: 'quick' | 'pro';
 }

@@ -46,6 +46,7 @@ export class WebhookController {
       message: body.message,
       chatId: body.chatId,
       dataAccess,
+      responseMode: body.responseMode,
     });
   }
 
@@ -68,6 +69,7 @@ export class WebhookController {
         message: body.message,
         chatId: body.chatId,
         dataAccess,
+        responseMode: body.responseMode,
       })) {
         res.write(`${JSON.stringify(ev)}\n`);
       }

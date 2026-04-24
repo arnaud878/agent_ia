@@ -34,7 +34,7 @@ import {
 } from '../lib/prompt-safety';
 import type { DataAccess } from '../../../common/types/data-access';
 import { isBiDataTable } from '../../../common/constants/bi-data-tables';
-import { BiPromptService } from './bi-prompt.service';
+import { BiPromptService, type BiResponseMode } from './bi-prompt.service';
 import { ChatHistoryService } from './chat-history.service';
 import type { BddSchema } from './schema.service';
 import { SchemaService } from './schema.service';
@@ -80,10 +80,17 @@ export class BiAgentService {
     return { bdd: { json: j } };
   }
 
+  private normalizeResponseMode(
+    raw: 'quick' | 'pro' | undefined,
+  ): BiResponseMode {
+    return raw === 'quick' ? 'quick' : 'pro';
+  }
+
   private async prepareAgentOrGreeting(input: {
     message: string;
     chatId: string;
     dataAccess: DataAccess;
+    responseMode?: 'quick' | 'pro';
   }): Promise<
     | {
         kind: 'greeting';
@@ -127,7 +134,8 @@ export class BiAgentService {
       );
     }
     const formuleKpi = this.prompts.getFormuleKpiTemplate();
-    const system = this.prompts.buildSystemMessage(bdd, formuleKpi);
+    const responseMode = this.normalizeResponseMode(input.responseMode);
+    const system = this.prompts.buildSystemMessage(bdd, formuleKpi, responseMode);
     const geminiModel: string =
       this.config.get<string>('GEMINI_MODEL') ?? 'gemini-3-flash-preview';
     const model = new ChatGoogleGenerativeAI({
@@ -165,6 +173,7 @@ export class BiAgentService {
     message: string;
     chatId: string;
     dataAccess?: DataAccess;
+    responseMode?: 'quick' | 'pro';
   }): Promise<{ output: string } & BiAgentOutput> {
     const ctx = await this.prepareAgentOrGreeting({
       ...input,
@@ -198,7 +207,9 @@ export class BiAgentService {
     message: string;
     chatId: string;
     dataAccess?: DataAccess;
+    responseMode?: 'quick' | 'pro';
   }): AsyncGenerator<BiStreamEvent> {
+    const responseMode = this.normalizeResponseMode(input.responseMode);
     const ctx = await this.prepareAgentOrGreeting({
       ...input,
       dataAccess: input.dataAccess ?? { kind: 'all' },
@@ -278,7 +289,10 @@ export class BiAgentService {
     }
     yield {
       t: 'status',
-      m: 'Préparation et mise en forme de la réponse (texte, graphiques)…',
+      m:
+        responseMode === 'quick'
+          ? 'Préparation de la réponse (mode rapide, sans graphique)…'
+          : 'Préparation et mise en forme de la réponse (texte, graphiques)…',
     };
     const out = { output: this.cleanHtml(sr.html), ...sr } as {
       output: string;

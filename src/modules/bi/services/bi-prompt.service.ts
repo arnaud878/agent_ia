@@ -2,10 +2,13 @@ import { readFileSync, existsSync } from 'node:fs';
 import { join } from 'node:path';
 import { Injectable } from '@nestjs/common';
 
+export type BiResponseMode = 'quick' | 'pro';
+
 @Injectable()
 export class BiPromptService {
   private staticPrompt: string | null = null;
   private formuleKpi: string | null = null;
+  private quickModePrompt: string | null = null;
 
   private readPromptFile(filename: string): string {
     const candidates = [
@@ -33,8 +36,20 @@ export class BiPromptService {
     return this.formuleKpi;
   }
 
-  buildSystemMessage(bdd: unknown, formuleKpi: string): string {
+  private getQuickModePrompt(): string {
+    this.quickModePrompt ??= this.readPromptFile('mode-quick.txt');
+    return this.quickModePrompt;
+  }
+
+  buildSystemMessage(
+    bdd: unknown,
+    formuleKpi: string,
+    mode: BiResponseMode = 'pro',
+  ): string {
+    const modeBlock =
+      mode === 'quick' ? `${this.getQuickModePrompt().trimEnd()}\n\n` : '';
     return this.getStaticPrompt()
+      .replace('__RESPONSE_MODE_BLOCK__', modeBlock)
       .replace(
         '__SCHEMA_BLOCK__',
         `**schemaDataBasePostgreSQL:**\n${JSON.stringify(bdd)}`,
