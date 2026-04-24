@@ -32,8 +32,11 @@ import {
   isLikelyUserPromptInjection,
   USER_MESSAGE_BLOCKED,
 } from '../lib/prompt-safety';
+import type { DataAccess } from '../../../common/types/data-access';
+import { isBiDataTable } from '../../../common/constants/bi-data-tables';
 import { BiPromptService } from './bi-prompt.service';
 import { ChatHistoryService } from './chat-history.service';
+import type { BddSchema } from './schema.service';
 import { SchemaService } from './schema.service';
 
 export type BiStreamEvent =
@@ -55,9 +58,32 @@ export class BiAgentService {
   /**
    * Prépare l’agent (ou la réponse de salutation). Facteur commun à runChat / streamChat.
    */
+  private async resolveBddForAccess(
+    dataAccess: DataAccess,
+  ): Promise<{ bdd: { json: BddSchema } }> {
+    const full = await this.schema.getBddJson();
+    if (dataAccess.kind === 'all') {
+      return full;
+    }
+    const names = new Set(
+      dataAccess.tableNames.filter((t) => isBiDataTable(t)),
+    );
+    if (names.size === 0) {
+      return { bdd: { json: {} } };
+    }
+    const j: BddSchema = {};
+    for (const k of Object.keys(full.bdd.json)) {
+      if (names.has(k)) {
+        j[k] = full.bdd.json[k]!;
+      }
+    }
+    return { bdd: { json: j } };
+  }
+
   private async prepareAgentOrGreeting(input: {
     message: string;
     chatId: string;
+    dataAccess: DataAccess;
   }): Promise<
     | {
         kind: 'greeting';
@@ -81,11 +107,25 @@ export class BiAgentService {
       return { kind: 'greeting', out };
     }
 
+    if (
+      input.dataAccess.kind === 'restricted' &&
+      input.dataAccess.tableNames.filter((t) => isBiDataTable(t)).length === 0
+    ) {
+      throw new BadRequestException(
+        'Aucune table de données n’est associée à votre rôle. Contactez un administrateur.',
+      );
+    }
+
     const maxPast = this.chatHistory.getMaxMessages();
     const [{ bdd }, past] = await Promise.all([
-      this.schema.getBddJson(),
+      this.resolveBddForAccess(input.dataAccess),
       this.chatHistory.loadForSession(input.chatId, maxPast),
     ]);
+    if (Object.keys(bdd.json).length === 0) {
+      throw new BadRequestException(
+        'Schéma métier vide pour les tables autorisées.',
+      );
+    }
     const formuleKpi = this.prompts.getFormuleKpiTemplate();
     const system = this.prompts.buildSystemMessage(bdd, formuleKpi);
     const geminiModel: string =
@@ -95,7 +135,7 @@ export class BiAgentService {
       temperature: 0.15,
       apiKey: this.config.getOrThrow<string>('GOOGLE_API_KEY'),
     });
-    const tools = buildBiTools(this.schema);
+    const tools = buildBiTools(this.schema, input.dataAccess);
     const agent = createReactAgent({
       llm: model,
       tools: [...tools],
@@ -124,8 +164,12 @@ export class BiAgentService {
   async runChat(input: {
     message: string;
     chatId: string;
+    dataAccess?: DataAccess;
   }): Promise<{ output: string } & BiAgentOutput> {
-    const ctx = await this.prepareAgentOrGreeting(input);
+    const ctx = await this.prepareAgentOrGreeting({
+      ...input,
+      dataAccess: input.dataAccess ?? { kind: 'all' },
+    });
     if (ctx.kind === 'greeting') {
       const gr = ctx.out;
       await this.persistTurn(input.chatId, input.message, gr);
@@ -153,8 +197,12 @@ export class BiAgentService {
   async *streamChat(input: {
     message: string;
     chatId: string;
+    dataAccess?: DataAccess;
   }): AsyncGenerator<BiStreamEvent> {
-    const ctx = await this.prepareAgentOrGreeting(input);
+    const ctx = await this.prepareAgentOrGreeting({
+      ...input,
+      dataAccess: input.dataAccess ?? { kind: 'all' },
+    });
     if (ctx.kind === 'greeting') {
       yield { t: 'status', m: 'Génération de la réponse d’accueil…' };
       const gr = ctx.out;

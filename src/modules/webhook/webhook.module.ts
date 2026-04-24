@@ -1,11 +1,12 @@
 import { Module } from '@nestjs/common';
+import { WebhookAuthGuard } from '../../common/guards/webhook-auth.guard';
+import { IamModule } from '../iam/iam.module';
 import { BiModule } from '../bi/bi.module';
-import { ApiConfigGuard } from '../../common/guards/api-config.guard';
 import { WebhookController } from './webhook.controller';
 
 @Module({
-  imports: [BiModule],
+  imports: [BiModule, IamModule],
   controllers: [WebhookController],
-  providers: [ApiConfigGuard],
+  providers: [WebhookAuthGuard],
 })
 export class WebhookModule {}

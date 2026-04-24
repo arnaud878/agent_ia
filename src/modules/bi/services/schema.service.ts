@@ -1,8 +1,11 @@
 import { Injectable, OnModuleDestroy } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { Pool, type QueryResult } from 'pg';
+import { BI_DATA_TABLES } from '../../../common/constants/bi-data-tables';
 
-/** Même requête que le n8n "Execute a SQL query" (noms de tables cohérents avec la base). */
+const BI_TABLE_IN_LIST = BI_DATA_TABLES.map((t) => `'${t}'`).join(', ');
+
+/** Même requête que le n8n "Execute a SQL query" (noms de tables = tables BI). */
 const SCHEMA_QUERY = `SELECT
     c.table_name,
     c.column_name,
@@ -24,12 +27,7 @@ FROM
     LEFT JOIN information_schema.constraint_column_usage AS ccu
         ON ccu.constraint_name = tc.constraint_name
 WHERE
-    c.table_name IN (
-        'irradiance',
-        'production',
-        'puissance_installee',
-        'vente_carburant'
-    )
+    c.table_name IN (${BI_TABLE_IN_LIST})
 ORDER BY
     c.table_name,
     c.ordinal_position`;

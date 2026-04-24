@@ -2,6 +2,8 @@ import { Module } from '@nestjs/common';
 import { ConfigModule } from '@nestjs/config';
 import { AppController } from './app.controller';
 import { AppService } from './app.service';
+import { BiDataTablesModule } from './common/bi-tables/bi-data-tables.module';
+import { IamModule } from './modules/iam/iam.module';
 import { WebhookModule } from './modules/webhook/webhook.module';
 
 @Module({
@@ -10,6 +12,8 @@ import { WebhookModule } from './modules/webhook/webhook.module';
       isGlobal: true,
       envFilePath: ['.env', '.env.local'],
     }),
+    BiDataTablesModule,
+    IamModule,
     WebhookModule,
   ],
   controllers: [AppController],

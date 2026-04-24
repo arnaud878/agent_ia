@@ -1,6 +1,12 @@
 import { tool } from '@langchain/core/tools';
 import { Parser } from 'expr-eval';
 import { z } from 'zod';
+import {
+  ALL_BI_DATA_TABLES,
+  isBiDataTable,
+} from '../../../common/constants/bi-data-tables';
+import { assertSelectSqlUsesOnlyAllowedTables } from '../../../common/lib/sql-table-allow';
+import type { DataAccess } from '../../../common/types/data-access';
 import type { SchemaService } from '../services/schema.service';
 
 function ensureSelectReadOnly(sql: string): { sql: string; warning?: string } {
@@ -53,13 +59,30 @@ function safeEvalExpression(expr: string): string {
   }
 }
 
+function allowedTableSetForAccess(data: DataAccess): Set<string> {
+  if (data.kind === 'all') {
+    return new Set(ALL_BI_DATA_TABLES);
+  }
+  return new Set(data.tableNames.filter((t) => isBiDataTable(t)));
+}
+
 /**
- * Même rôle que les outils n8n SQLExecutor, Think, Calculator.
+ * Outils n8n; `dataAccess` restreint les tables SQL et le schéma injecté côté agent.
  */
-export function buildBiTools(schemaService: SchemaService) {
+export function buildBiTools(
+  schemaService: SchemaService,
+  dataAccess: DataAccess,
+) {
+  const allow = allowedTableSetForAccess(dataAccess);
   const sqlExecutor = tool(
     async (input: { sql_query: string }) => {
+      if (allow.size === 0) {
+        throw new Error(
+          'Aucune table n’est autorisée pour ce compte. Contactez un administrateur.',
+        );
+      }
       const { sql, warning } = ensureSelectReadOnly(input.sql_query);
+      assertSelectSqlUsesOnlyAllowedTables(sql, allow);
       const res = await schemaService.executeQuery(sql);
       const text = JSON.stringify(
         { rows: res.rows, rowCount: res.rowCount, warning: warning ?? null },
