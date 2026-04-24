@@ -8,6 +8,8 @@ import { AuthController } from './auth.controller';
 import { AuthService } from './auth.service';
 import { IamService } from './iam.service';
 import { JwtStrategy } from './jwt.strategy';
+import { ConversationsController } from './conversations.controller';
+import { ConversationsService } from './conversations.service';
 import { RbacController } from './rbac.controller';
 
 @Module({
@@ -23,8 +25,8 @@ import { RbacController } from './rbac.controller';
       }),
     }),
   ],
-  controllers: [AuthController, RbacController],
-  providers: [IamService, AuthService, JwtStrategy, RolesGuard],
+  controllers: [AuthController, RbacController, ConversationsController],
+  providers: [IamService, AuthService, JwtStrategy, RolesGuard, ConversationsService],
   exports: [IamService, AuthService, JwtModule],
 })
 export class IamModule {}

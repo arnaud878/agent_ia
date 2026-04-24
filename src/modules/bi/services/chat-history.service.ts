@@ -26,6 +26,7 @@ export class ChatHistoryService {
   /**
    * Derniers messages (ordre chrono) pour alimenter l’agent.
    * Chaque entrée = une ligne user ou assistant.
+   * L’affichage UI des conversations repose sur `bi_conversation_messages` (hors n8n).
    */
   async loadForSession(
     sessionId: string,
