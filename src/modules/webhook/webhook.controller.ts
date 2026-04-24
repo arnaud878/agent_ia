@@ -1,4 +1,12 @@
-import { Body, Controller, Logger, Post, Res, UseGuards } from '@nestjs/common';
+import {
+  Body,
+  Controller,
+  HttpException,
+  Logger,
+  Post,
+  Res,
+  UseGuards,
+} from '@nestjs/common';
 import type { Response } from 'express';
 import {
   BI_STREAM_VERSION_HEADER,
@@ -7,6 +15,20 @@ import {
 import { BiAgentService } from '../bi/services/bi-agent.service';
 import { ApiConfigGuard } from '../../common/guards/api-config.guard';
 import { WebhookBodyDto } from './dto/webhook-body.dto';
+
+function streamErrorMessage(e: unknown): string {
+  if (e instanceof HttpException) {
+    const r = e.getResponse();
+    if (typeof r === 'string') {
+      return r;
+    }
+    if (r && typeof r === 'object' && 'message' in r) {
+      const m = (r as { message: string | string[] }).message;
+      return Array.isArray(m) ? (m[0] ?? e.message) : m;
+    }
+  }
+  return e instanceof Error ? e.message : 'Erreur inconnue';
+}
 
 @Controller('webhook')
 @UseGuards(ApiConfigGuard)
@@ -45,9 +67,10 @@ export class WebhookController {
       res.end();
     } catch (e) {
       this.log.error(e);
-      const message = e instanceof Error ? e.message : 'Erreur inconnue';
+      const status = e instanceof HttpException ? e.getStatus() : 500;
+      const message = streamErrorMessage(e);
       if (!res.headersSent) {
-        res.status(500);
+        res.status(status);
       }
       res.write(`${JSON.stringify({ t: 'error' as const, message })}\n`);
       res.end();

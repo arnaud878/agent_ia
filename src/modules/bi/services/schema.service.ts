@@ -89,11 +89,7 @@ export class SchemaService implements OnModuleDestroy {
       this.config.get<string>('BDD_SCHEMA_CACHE_TTL_SECONDS'),
     );
     const now = Date.now();
-    if (
-      ttlSec > 0 &&
-      this.bddJsonCache &&
-      now < this.bddJsonCache.expiresAt
-    ) {
+    if (ttlSec > 0 && this.bddJsonCache && now < this.bddJsonCache.expiresAt) {
       return this.bddJsonCache.data;
     }
 

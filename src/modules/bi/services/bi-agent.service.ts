@@ -1,4 +1,5 @@
 import {
+  BadRequestException,
   Injectable,
   InternalServerErrorException,
   Logger,
@@ -27,6 +28,10 @@ import {
   humanizeToolResult,
   inferToolNameFromMessage,
 } from '../lib/bi-stream-status';
+import {
+  isLikelyUserPromptInjection,
+  USER_MESSAGE_BLOCKED,
+} from '../lib/prompt-safety';
 import { BiPromptService } from './bi-prompt.service';
 import { ChatHistoryService } from './chat-history.service';
 import { SchemaService } from './schema.service';
@@ -65,6 +70,11 @@ export class BiAgentService {
         userText: string;
       }
   > {
+    if (isLikelyUserPromptInjection(input.message)) {
+      this.log.warn('Message utilisateur rejeté (anti–contournement consigne)');
+      throw new BadRequestException(USER_MESSAGE_BLOCKED);
+    }
+
     if (isSimpleGreeting(input.message)) {
       this.log.debug('Salutation détectée → réponse rapide (sans LLM)');
       const out = buildGreetingResponse();
