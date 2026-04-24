@@ -27,6 +27,10 @@ export type UiMessageRow = {
   createdAt: string;
 };
 
+/** Nombre max de fils / messages (cohérent avec n8n + UI) — évite les OOM, à ajuster côté besoin. */
+const LIST_CONVERSATIONS_MAX = 2000;
+const LOAD_MESSAGES_MAX = 20_000;
+
 @Injectable()
 export class ConversationsService {
   private readonly log = new Logger(ConversationsService.name);
@@ -62,7 +66,7 @@ export class ConversationsService {
          FROM public.bi_conversation_messages m
          WHERE m.conversation_id = c.id) DESC NULLS LAST,
         c.updated_at DESC
-      LIMIT 200`;
+      LIMIT ${LIST_CONVERSATIONS_MAX}`;
     const res = (await this.schema.executeQuery(q, [userId])) as QueryResult<
       ConversationRow
     >;
@@ -200,7 +204,7 @@ export class ConversationsService {
       FROM public.bi_conversation_messages
       WHERE conversation_id = $1
       ORDER BY created_at ASC, id ASC
-      LIMIT 2000`;
+      LIMIT ${LOAD_MESSAGES_MAX}`;
     const res = (await this.schema.executeQuery(q, [
       conversationId,
     ])) as QueryResult<Record<string, unknown>>;
