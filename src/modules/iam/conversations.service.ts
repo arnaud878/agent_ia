@@ -41,7 +41,7 @@ export class ConversationsService {
     for (let i = 0; i < 8; i++) {
       const raw = randomBytes(8).toString('base64url').replace(/[^a-zA-Z0-9]/g, '');
       const k = (raw.length >= 10 ? raw : randomUUID().replace(/-/g, '')).slice(0, 10);
-      const exists = (await this.schema.executeQuery(
+      const exists = (await this.schema.executeAppQuery(
         `SELECT 1 AS o FROM public.bi_conversations WHERE display_key = $1`,
         [k],
       )) as QueryResult<{ o: number }>;
@@ -67,7 +67,7 @@ export class ConversationsService {
          WHERE m.conversation_id = c.id) DESC NULLS LAST,
         c.updated_at DESC
       LIMIT ${LIST_CONVERSATIONS_MAX}`;
-    const res = (await this.schema.executeQuery(q, [userId])) as QueryResult<
+    const res = (await this.schema.executeAppQuery(q, [userId])) as QueryResult<
       ConversationRow
     >;
     return (res.rows ?? []) as unknown as ConversationRow[];
@@ -85,7 +85,7 @@ export class ConversationsService {
           ? null
           : String(body.title).trim() || null;
 
-    const existing = await this.schema.executeQuery(
+    const existing = await this.schema.executeAppQuery(
       `SELECT user_id AS "userId" FROM public.bi_conversations WHERE id = $1`,
       [id],
     );
@@ -96,7 +96,7 @@ export class ConversationsService {
 
     if (row0 === undefined) {
       const displayKey = await this.nextUniqueDisplayKey();
-      const ins = (await this.schema.executeQuery(
+      const ins = (await this.schema.executeAppQuery(
         `INSERT INTO public.bi_conversations
           (id, user_id, title, display_key, created_at, updated_at)
          VALUES ($1, $2, $3, $4, now(), now())
@@ -112,7 +112,7 @@ export class ConversationsService {
       return r;
     }
 
-    const upd = (await this.schema.executeQuery(
+    const upd = (await this.schema.executeAppQuery(
       `UPDATE public.bi_conversations
        SET
          title = COALESCE($2, title),
@@ -134,7 +134,7 @@ export class ConversationsService {
     userId: string,
     conversationId: string,
   ): Promise<ConversationRow> {
-    const res = (await this.schema.executeQuery(
+    const res = (await this.schema.executeAppQuery(
       `SELECT
          id, display_key AS "displayKey", title,
          created_at AS "createdAt", updated_at AS "updatedAt"
@@ -155,7 +155,7 @@ export class ConversationsService {
     body: { title?: string | null },
   ): Promise<ConversationRow> {
     if (Object.keys(body).length === 0) {
-      const touch = (await this.schema.executeQuery(
+      const touch = (await this.schema.executeAppQuery(
         `UPDATE public.bi_conversations
          SET updated_at = now()
          WHERE id = $1 AND user_id = $2
@@ -171,7 +171,7 @@ export class ConversationsService {
       return r;
     }
     const title = body.title === null ? null : (body.title ?? '').trim() || null;
-    const res = (await this.schema.executeQuery(
+    const res = (await this.schema.executeAppQuery(
       `UPDATE public.bi_conversations
        SET
          title = $3,
@@ -205,7 +205,7 @@ export class ConversationsService {
       WHERE conversation_id = $1
       ORDER BY created_at ASC, id ASC
       LIMIT ${LOAD_MESSAGES_MAX}`;
-    const res = (await this.schema.executeQuery(q, [
+    const res = (await this.schema.executeAppQuery(q, [
       conversationId,
     ])) as QueryResult<Record<string, unknown>>;
     return (res.rows ?? []).map((r) => ({
@@ -245,7 +245,7 @@ export class ConversationsService {
         ? null
         : Math.min(1_000_000, Math.max(0, body.durationMs));
 
-    const ins = (await this.schema.executeQuery(
+    const ins = (await this.schema.executeAppQuery(
       `INSERT INTO public.bi_conversation_messages
          (conversation_id, role, body_text, body_html, duration_ms)
        VALUES ($1, $2, $3, $4, $5)
@@ -257,7 +257,7 @@ export class ConversationsService {
       throw new BadRequestException('Enregistrement message');
     }
     try {
-      await this.schema.executeQuery(
+      await this.schema.executeAppQuery(
         `UPDATE public.bi_conversations SET updated_at = now() WHERE id = $1`,
         [conversationId],
       );
@@ -270,7 +270,7 @@ export class ConversationsService {
   async remove(userId: string, conversationId: string): Promise<void> {
     await this.ensureOwner(userId, conversationId);
     try {
-      await this.schema.executeQuery(
+      await this.schema.executeAppQuery(
         `DELETE FROM public.n8n_chat_histories_v6
          WHERE session_id = $1`,
         [conversationId],
@@ -279,7 +279,7 @@ export class ConversationsService {
       this.log.warn('Suppression historique agent: %s', (e as Error).message);
     }
     try {
-      await this.schema.executeQuery(
+      await this.schema.executeAppQuery(
         `DELETE FROM public.bi_conversations WHERE id = $1 AND user_id = $2`,
         [conversationId, userId],
       );

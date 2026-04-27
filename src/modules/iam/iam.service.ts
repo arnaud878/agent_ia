@@ -56,7 +56,7 @@ export class IamService implements OnModuleInit {
   }
 
   async findByIdForAuth(id: string): Promise<AuthUserPayload | null> {
-    const rows = await this.schema.executeQuery(
+    const rows = await this.schema.executeAppQuery(
       `SELECT u.id, u.email, u.active, r.slug AS "roleSlug"
        FROM public.app_users u
        JOIN public.app_roles r ON r.id = u.role_id
@@ -78,7 +78,7 @@ export class IamService implements OnModuleInit {
   }
 
   async getDataAccessForUserId(userId: string): Promise<DataAccess | null> {
-    const rows = await this.schema.executeQuery(
+    const rows = await this.schema.executeAppQuery(
       `SELECT u.active, r.access_all_tables AS "accessAll"
        FROM public.app_users u
        JOIN public.app_roles r ON r.id = u.role_id
@@ -94,7 +94,7 @@ export class IamService implements OnModuleInit {
     if (base.accessAll) {
       return { kind: 'all' };
     }
-    const t = await this.schema.executeQuery(
+    const t = await this.schema.executeAppQuery(
       `SELECT art.table_name AS "tableName"
        FROM public.app_users u
        JOIN public.app_role_tables art ON art.role_id = u.role_id
@@ -114,7 +114,7 @@ export class IamService implements OnModuleInit {
     email: string,
     password: string,
   ): Promise<AuthUserPayload | null> {
-    const rows = await this.schema.executeQuery(
+    const rows = await this.schema.executeAppQuery(
       `SELECT u.id, u.email, u.password_hash AS "passwordHash", u.active, r.slug AS "roleSlug"
        FROM public.app_users u
        JOIN public.app_roles r ON r.id = u.role_id
@@ -146,7 +146,7 @@ export class IamService implements OnModuleInit {
   }
 
   async findUserByEmail(email: string) {
-    const res = await this.schema.executeQuery(
+    const res = await this.schema.executeAppQuery(
       `SELECT id FROM public.app_users WHERE lower(email) = lower($1)`,
       [email.trim()],
     );
@@ -154,7 +154,7 @@ export class IamService implements OnModuleInit {
   }
 
   async findRoleIdBySlug(slug: string): Promise<string | null> {
-    const res = await this.schema.executeQuery(
+    const res = await this.schema.executeAppQuery(
       `SELECT id FROM public.app_roles WHERE slug = $1`,
       [slug],
     );
@@ -168,7 +168,7 @@ export class IamService implements OnModuleInit {
     roleId: string,
   ): Promise<string> {
     const passwordHash = await bcrypt.hash(password, BCRYPT_ROUNDS);
-    const res = await this.schema.executeQuery(
+    const res = await this.schema.executeAppQuery(
       `INSERT INTO public.app_users (email, password_hash, role_id)
        VALUES ($1, $2, $3)
        RETURNING id`,
@@ -194,12 +194,12 @@ export class IamService implements OnModuleInit {
   }
 
   async listRoles() {
-    const r = await this.schema.executeQuery(
+    const r = await this.schema.executeAppQuery(
       `SELECT r.id, r.name, r.slug, r.description, r.access_all_tables AS "accessAll", r.created_at AS "createdAt"
        FROM public.app_roles r
        ORDER BY r.name`,
     );
-    const tables = await this.schema.executeQuery(
+    const tables = await this.schema.executeAppQuery(
       `SELECT role_id AS "roleId", table_name AS "tableName" FROM public.app_role_tables`,
     );
     const byRole = new Map<string, string[]>();
@@ -223,7 +223,7 @@ export class IamService implements OnModuleInit {
     accessAllTables: boolean,
     description: string | null,
   ) {
-    const res = await this.schema.executeQuery(
+    const res = await this.schema.executeAppQuery(
       `INSERT INTO public.app_roles (name, slug, description, access_all_tables)
        VALUES ($1, $2, $3, $4)
        RETURNING id, name, slug, description, access_all_tables AS "accessAll"`,
@@ -238,12 +238,12 @@ export class IamService implements OnModuleInit {
         throw new BadRequestException(`Table inconnue ou non autorisée : ${t}`);
       }
     }
-    await this.schema.executeQuery(
+    await this.schema.executeAppQuery(
       `DELETE FROM public.app_role_tables WHERE role_id = $1`,
       [roleId],
     );
     for (const t of tableNames) {
-      await this.schema.executeQuery(
+      await this.schema.executeAppQuery(
         `INSERT INTO public.app_role_tables (role_id, table_name) VALUES ($1, $2)`,
         [roleId, t],
       );
@@ -252,7 +252,7 @@ export class IamService implements OnModuleInit {
   }
 
   async listUsers() {
-    const r = await this.schema.executeQuery(
+    const r = await this.schema.executeAppQuery(
       `SELECT u.id, u.email, u.active, u.role_id AS "roleId", u.created_at AS "createdAt",
               r.slug AS "roleSlug", r.name AS "roleName"
        FROM public.app_users u
@@ -271,7 +271,7 @@ export class IamService implements OnModuleInit {
     active: boolean;
     passwordHash: string;
   } | null> {
-    const r = await this.schema.executeQuery(
+    const r = await this.schema.executeAppQuery(
       `SELECT u.id, u.email, u.role_id AS "roleId", u.active,
               u.password_hash AS "passwordHash"
        FROM public.app_users u
@@ -308,7 +308,7 @@ export class IamService implements OnModuleInit {
       throw new NotFoundException('Utilisateur introuvable');
     }
     if (patches.roleId) {
-      const roleCheck = await this.schema.executeQuery(
+      const roleCheck = await this.schema.executeAppQuery(
         `SELECT id FROM public.app_roles WHERE id = $1`,
         [patches.roleId],
       );
@@ -323,7 +323,7 @@ export class IamService implements OnModuleInit {
     if (patches.password) {
       newHash = await bcrypt.hash(patches.password, BCRYPT_ROUNDS);
     }
-    await this.schema.executeQuery(
+    await this.schema.executeAppQuery(
       `UPDATE public.app_users
        SET role_id = $1, active = $2, password_hash = $3
        WHERE id = $4`,

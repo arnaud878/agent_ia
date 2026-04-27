@@ -1,10 +1,7 @@
 import { tool } from '@langchain/core/tools';
 import { Parser } from 'expr-eval';
 import { z } from 'zod';
-import {
-  ALL_BI_DATA_TABLES,
-  isBiDataTable,
-} from '../../../common/constants/bi-data-tables';
+import { BiDataTablesService } from '../../../common/bi-tables/bi-data-tables.service';
 import { assertSelectSqlUsesOnlyAllowedTables } from '../../../common/lib/sql-table-allow';
 import type { DataAccess } from '../../../common/types/data-access';
 import type { SchemaService } from '../services/schema.service';
@@ -59,11 +56,16 @@ function safeEvalExpression(expr: string): string {
   }
 }
 
-function allowedTableSetForAccess(data: DataAccess): Set<string> {
+function allowedTableSetForAccess(
+  data: DataAccess,
+  biTables: BiDataTablesService,
+): Set<string> {
   if (data.kind === 'all') {
-    return new Set(ALL_BI_DATA_TABLES);
+    return new Set(biTables.getAllTableNames());
   }
-  return new Set(data.tableNames.filter((t) => isBiDataTable(t)));
+  return new Set(
+    data.tableNames.filter((t) => biTables.isBiDataTableName(t)),
+  );
 }
 
 /**
@@ -72,8 +74,9 @@ function allowedTableSetForAccess(data: DataAccess): Set<string> {
 export function buildBiTools(
   schemaService: SchemaService,
   dataAccess: DataAccess,
+  biTables: BiDataTablesService,
 ) {
-  const allow = allowedTableSetForAccess(dataAccess);
+  const allow = allowedTableSetForAccess(dataAccess, biTables);
   const sqlExecutor = tool(
     async (input: { sql_query: string }) => {
       if (allow.size === 0) {
@@ -83,7 +86,7 @@ export function buildBiTools(
       }
       const { sql, warning } = ensureSelectReadOnly(input.sql_query);
       assertSelectSqlUsesOnlyAllowedTables(sql, allow);
-      const res = await schemaService.executeQuery(sql);
+      const res = await schemaService.executeBiQuery(sql);
       const text = JSON.stringify(
         { rows: res.rows, rowCount: res.rowCount, warning: warning ?? null },
         null,
@@ -97,7 +100,7 @@ export function buildBiTools(
     {
       name: 'SQLExecutor',
       description:
-        "Exécute une requête SQL en lecture seule sur PostgreSQL. Passe l’argument 'sql_query'.",
+        "Exécute une requête SQL en lecture seule sur PostgreSQL. Passe l'argument 'sql_query'.",
       schema: z.object({
         sql_query: z.string().describe('Requête SQL SELECT (schéma validé)'),
       }),

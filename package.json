@@ -18,14 +18,12 @@
     "test:cov": "jest --coverage",
     "test:debug": "node --inspect-brk -r tsconfig-paths/register -r ts-node/register node_modules/.bin/jest --runInBand",
     "test:e2e": "jest --config ./test/jest-e2e.json",
-    "db:migrate": "node scripts/db-exec.cjs migrations/20260423120000_puissance_irradiance_production_vente.sql",
-    "db:seed": "node scripts/db-exec.cjs migrations/20260423120100_seed_test_data.sql",
-    "db:setup": "npm run db:migrate && npm run db:seed",
     "db:migrate:chat": "node scripts/db-exec.cjs migrations/20260424120000_n8n_chat_histories_v6.sql",
     "db:migrate:auth": "node scripts/db-exec.cjs migrations/20260601120000_auth_rbac.sql",
     "db:migrate:conversations": "node scripts/db-exec.cjs migrations/20260602120000_bi_conversations.sql",
     "db:migrate:conversations-ui": "node scripts/db-exec.cjs migrations/20260624140000_bi_conversation_ui.sql",
-    "db:migrate:conversations-all": "npm run db:migrate:conversations && npm run db:migrate:conversations-ui"
+    "db:migrate:conversations-all": "npm run db:migrate:conversations && npm run db:migrate:conversations-ui",
+    "db:migrate:app": "npm run db:migrate:auth && npm run db:migrate:chat && npm run db:migrate:conversations-all"
   },
   "dependencies": {
     "@langchain/core": "^1.1.41",

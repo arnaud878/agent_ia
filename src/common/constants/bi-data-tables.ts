@@ -1,17 +1,12 @@
 /**
- * Tables métier exposées à l’agent BI (cohérent avec schema.service).
+ * Tables BI par défaut (fallback si `config/bi-data-tables.json` absent ou invalide).
+ * La source de vérité à l’exécution est `BiDataTablesService` (fichier JSON).
  */
-export const BI_DATA_TABLES = [
+export const DEFAULT_BI_DATA_TABLES = [
   'irradiance',
   'production',
   'puissance_installee',
   'vente_carburant',
 ] as const;
 
-export type BiDataTable = (typeof BI_DATA_TABLES)[number];
-
-export const ALL_BI_DATA_TABLES: ReadonlyArray<string> = [...BI_DATA_TABLES];
-
-export function isBiDataTable(name: string): boolean {
-  return (BI_DATA_TABLES as readonly string[]).includes(name);
-}
+export type DefaultBiDataTable = (typeof DEFAULT_BI_DATA_TABLES)[number];

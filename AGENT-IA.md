@@ -19,7 +19,7 @@ Le modèle utilisé est **Google Gemini** via `@langchain/google-genai` (`ChatGo
 
 ## 2. Données et schéma
 
-Le service `SchemaService` interroge `information_schema` pour reconstruire un objet **JSON de schéma** (équivalent « Info BDD » n8n) pour les tables suivantes **uniquement** :
+Le service `SchemaService` interroge `information_schema` sur la **base analytique** (`BI_DATABASE_URL`, ou `DATABASE_URL` si non défini) et reconstruit un objet **JSON de schéma** (équivalent « Info BDD » n8n) pour les tables listées dans **`config/bi-data-tables.json`** (variable `BI_DATA_TABLES_CONFIG` pour un autre chemin) **uniquement** — par défaut :
 
 | Table                 | Rôle (résumé)                                    |
 |-----------------------|--------------------------------------------------|
@@ -42,7 +42,7 @@ Trois outils LangChain sont assemblés dans `buildBiTools` :
 | **Think**     | Aide le modèle à **structurer** son raisonnement (notes courtes) ; ne modifie pas la base. |
 | **calculator** | Évalue une **expression arithmétique** restreinte (`+ - * /` et parenthèses, caractères dangereux filtrés, longueur plafonnée). |
 
-Ainsi, l’**agent ne parle pas directement** au pool `pg` : toute requête passe par l’outil **SQLExecutor**, qui applique des garde-fous côté serveur.
+Ainsi, l’**agent ne parle pas directement** au pool de la base BI : toute requête passe par l’outil **SQLExecutor**, qui applique des garde-fous côté serveur.
 
 ---
 
@@ -121,7 +121,7 @@ flowchart TD
 ```mermaid
 flowchart LR
   S[Modèle génère sql_query] --> V[Validation SELECT + pas de mots dangereux + LIMIT]
-  V --> P[Exécution via pg Pool]
+  V --> P[Exécution via pool pg base BI]
   P --> R[JSON: rows, rowCount, warning]
   R --> S2[Modèle intègre le résultat]
 ```
@@ -134,7 +134,9 @@ flowchart LR
 
 | Variable            | Rôle |
 |---------------------|------|
-| `DATABASE_URL`      | Connexion PostgreSQL (schéma + exécution SQL outil) |
+| `DATABASE_URL`      | Base **application** (IAM, rôles, conversations, `n8n_chat_histories_v6`) |
+| `BI_DATABASE_URL`   | Optionnel. Base **analytique** (schéma + SQL agent). Si absent = même URL que `DATABASE_URL` |
+| `BI_DATA_TABLES_CONFIG` | Optionnel. Chemin absolu ou relatif (depuis le cwd, ex. répertoire `ia_back`) vers le JSON des tables BI (défaut `config/bi-data-tables.json`) |
 | `GOOGLE_API_KEY`    | Clé API Google (Gemini) |
 | `GEMINI_MODEL`      | Nom du modèle (ex. `gemini-3-flash-preview`) |
 | `API_CONFIG_SECRET` | Secret partagé pour l’en-tête `x-api-config` sur le webhook |
@@ -148,7 +150,7 @@ flowchart LR
 ## 10. Limites opérationnelles
 
 - **Quota / 429** : des erreurs *Too Many Requests* côté Google peuvent survenir ; ce n’est pas un défaut d’intégration application en soi, mais un plafond côté fournisseur.
-- **Tables couvertes** : seule la liste des quatre tables du `SCHEMA_QUERY` est exposée ; toute autre table est invisible pour l’agent.
+- **Tables couvertes** : seules les tables listées dans le JSON de configuration BI (`config/bi-data-tables.json` par défaut) sont exposées ; toute autre table est invisible pour l’agent.
 - **Histoire côté client** : le DTO peut encore comporter un champ `history` — la **référence** d’historique est celle lue en base sur `chatId` (session), pas l’ancien `history` du client.
 
 ---

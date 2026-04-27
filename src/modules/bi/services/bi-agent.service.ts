@@ -33,7 +33,7 @@ import {
   USER_MESSAGE_BLOCKED,
 } from '../lib/prompt-safety';
 import type { DataAccess } from '../../../common/types/data-access';
-import { isBiDataTable } from '../../../common/constants/bi-data-tables';
+import { BiDataTablesService } from '../../../common/bi-tables/bi-data-tables.service';
 import { BiPromptService, type BiResponseMode } from './bi-prompt.service';
 import { ChatHistoryService } from './chat-history.service';
 import type { BddSchema } from './schema.service';
@@ -51,6 +51,7 @@ export class BiAgentService {
   constructor(
     private readonly config: ConfigService,
     private readonly schema: SchemaService,
+    private readonly biTables: BiDataTablesService,
     private readonly prompts: BiPromptService,
     private readonly chatHistory: ChatHistoryService,
   ) {}
@@ -66,7 +67,7 @@ export class BiAgentService {
       return full;
     }
     const names = new Set(
-      dataAccess.tableNames.filter((t) => isBiDataTable(t)),
+      dataAccess.tableNames.filter((t) => this.biTables.isBiDataTableName(t)),
     );
     if (names.size === 0) {
       return { bdd: { json: {} } };
@@ -116,7 +117,9 @@ export class BiAgentService {
 
     if (
       input.dataAccess.kind === 'restricted' &&
-      input.dataAccess.tableNames.filter((t) => isBiDataTable(t)).length === 0
+      input.dataAccess.tableNames.filter((t) =>
+        this.biTables.isBiDataTableName(t),
+      ).length === 0
     ) {
       throw new BadRequestException(
         'Aucune table de données n’est associée à votre rôle. Contactez un administrateur.',
@@ -143,7 +146,11 @@ export class BiAgentService {
       temperature: 0.15,
       apiKey: this.config.getOrThrow<string>('GOOGLE_API_KEY'),
     });
-    const tools = buildBiTools(this.schema, input.dataAccess);
+    const tools = buildBiTools(
+      this.schema,
+      input.dataAccess,
+      this.biTables,
+    );
     const agent = createReactAgent({
       llm: model,
       tools: [...tools],

@@ -1,12 +1,9 @@
 import { Injectable, OnModuleDestroy } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { Pool, type QueryResult } from 'pg';
-import { BI_DATA_TABLES } from '../../../common/constants/bi-data-tables';
+import { BiDataTablesService } from '../../../common/bi-tables/bi-data-tables.service';
 
-const BI_TABLE_IN_LIST = BI_DATA_TABLES.map((t) => `'${t}'`).join(', ');
-
-/** Même requête que le n8n "Execute a SQL query" (noms de tables = tables BI). */
-const SCHEMA_QUERY = `SELECT
+const SCHEMA_SELECT = `SELECT
     c.table_name,
     c.column_name,
     c.data_type,
@@ -27,7 +24,7 @@ FROM
     LEFT JOIN information_schema.constraint_column_usage AS ccu
         ON ccu.constraint_name = tc.constraint_name
 WHERE
-    c.table_name IN (${BI_TABLE_IN_LIST})
+    c.table_name IN (%IN%)
 ORDER BY
     c.table_name,
     c.ordinal_position`;
@@ -46,7 +43,9 @@ export type BddSchema = Record<
 
 @Injectable()
 export class SchemaService implements OnModuleDestroy {
-  private pool: Pool;
+  private readonly appPool: Pool;
+  private readonly biPool: Pool;
+  private readonly biPoolIsShared: boolean;
 
   /** Cache du JSON « Info BDD » (metadata) : évite une requête `information_schema` à chaque tour. */
   private bddJsonCache: {
@@ -54,28 +53,66 @@ export class SchemaService implements OnModuleDestroy {
     expiresAt: number;
   } | null = null;
 
-  constructor(private readonly config: ConfigService) {
-    const url = this.config.getOrThrow<string>('DATABASE_URL');
-    this.pool = new Pool({ connectionString: url, max: 10 });
+  constructor(
+    private readonly config: ConfigService,
+    private readonly biTables: BiDataTablesService,
+  ) {
+    const appUrl = this.config.getOrThrow<string>('DATABASE_URL');
+    const biRaw = this.config.get<string>('BI_DATABASE_URL')?.trim() ?? '';
+    const biUrl = biRaw !== '' ? biRaw : appUrl;
+    this.appPool = new Pool({ connectionString: appUrl, max: 10 });
+    if (biUrl === appUrl) {
+      this.biPool = this.appPool;
+      this.biPoolIsShared = true;
+    } else {
+      this.biPool = new Pool({ connectionString: biUrl, max: 10 });
+      this.biPoolIsShared = false;
+    }
   }
 
   onModuleDestroy() {
-    return this.pool.end();
+    const closeApp = this.appPool.end();
+    if (this.biPoolIsShared) {
+      return closeApp;
+    }
+    return Promise.all([closeApp, this.biPool.end()]).then(() => undefined);
   }
 
-  getPool(): Pool {
-    return this.pool;
-  }
-
-  /** Exécution bas niveau (outil SQL, paramètres optionnels $1, $2, …). */
-  async executeQuery(
+  /**
+   * Base applicative (IAM, rôles, conversations, historique n8n, …).
+   */
+  async executeAppQuery(
     sql: string,
     params?: unknown[],
   ): Promise<QueryResult<Record<string, unknown>>> {
     if (params && params.length > 0) {
-      return this.pool.query<Record<string, unknown>>(sql, params);
+      return this.appPool.query<Record<string, unknown>>(sql, params);
     }
-    return this.pool.query<Record<string, unknown>>(sql);
+    return this.appPool.query<Record<string, unknown>>(sql);
+  }
+
+  /**
+   * Base analytique (tables listées dans `config/bi-data-tables.json`, requêtes de l’agent).
+   */
+  async executeBiQuery(
+    sql: string,
+    params?: unknown[],
+  ): Promise<QueryResult<Record<string, unknown>>> {
+    if (params && params.length > 0) {
+      return this.biPool.query<Record<string, unknown>>(sql, params);
+    }
+    return this.biPool.query<Record<string, unknown>>(sql);
+  }
+
+  private buildBddSchemaQuery(): string {
+    const list = this.biTables
+      .getAllTableNames()
+      .filter((t) => /^[a-zA-Z_][a-zA-Z0-9_]*$/.test(t));
+    if (list.length === 0) {
+      throw new Error('Aucune table BI valide (config/bi-data-tables.json).');
+    }
+    const inList = list.map((t) => `'${t.replace(/'/g, "''")}'`).join(', ');
+    return SCHEMA_SELECT.replace('%IN%', inList);
   }
 
   /**
@@ -91,7 +128,8 @@ export class SchemaService implements OnModuleDestroy {
       return this.bddJsonCache.data;
     }
 
-    const res = await this.pool.query<{
+    const schemaQuery = this.buildBddSchemaQuery();
+    const res = await this.biPool.query<{
       table_name: string;
       column_name: string;
       data_type: string;
@@ -100,7 +138,7 @@ export class SchemaService implements OnModuleDestroy {
       constraint_type: string | null;
       foreign_table_name: string | null;
       foreign_column_name: string | null;
-    }>(SCHEMA_QUERY);
+    }>(schemaQuery);
     const data: { bdd: { json: BddSchema } } = {
       bdd: { json: this.mapRowsToBdd(res.rows) },
     };

@@ -42,7 +42,7 @@ export class ChatHistoryService {
       LIMIT $2`;
     let res: QueryResult<{ message: unknown }>;
     try {
-      res = (await this.schema.executeQuery(q, [
+      res = (await this.schema.executeAppQuery(q, [
         sessionId,
         limit,
       ])) as QueryResult<{ message: unknown }>;
@@ -69,7 +69,7 @@ export class ChatHistoryService {
       text: message.text,
     };
     try {
-      await this.schema.executeQuery(q, [sessionId, JSON.stringify(payload)]);
+      await this.schema.executeAppQuery(q, [sessionId, JSON.stringify(payload)]);
     } catch (e) {
       this.log.warn(
         'Enregistrement historique échoué: %s',
