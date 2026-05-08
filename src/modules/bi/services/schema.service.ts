@@ -92,7 +92,7 @@ export class SchemaService implements OnModuleDestroy {
   }
 
   /**
-   * Base analytique (tables listées dans `config/bi-data-tables.json`, requêtes de l’agent).
+   * Base analytique (tables BI configurées en base via admin, requêtes de l’agent).
    */
   async executeBiQuery(
     sql: string,
@@ -109,7 +109,7 @@ export class SchemaService implements OnModuleDestroy {
       .getAllTableNames()
       .filter((t) => /^[a-zA-Z_][a-zA-Z0-9_]*$/.test(t));
     if (list.length === 0) {
-      throw new Error('Aucune table BI valide (config/bi-data-tables.json).');
+      throw new Error('Aucune table BI valide configurée.');
     }
     const inList = list.map((t) => `'${t.replace(/'/g, "''")}'`).join(', ');
     return SCHEMA_SELECT.replace('%IN%', inList);

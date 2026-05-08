@@ -335,4 +335,13 @@ export class IamService implements OnModuleInit {
   allBiTableNamesForDocs(): string[] {
     return [...this.biTables.getAllTableNames()];
   }
+
+  async setBiTableNames(tableNames: string[]): Promise<{ tables: string[] }> {
+    try {
+      const tables = await this.biTables.setAllTableNames(tableNames);
+      return { tables: [...tables] };
+    } catch (e) {
+      throw new BadRequestException((e as Error).message);
+    }
+  }
 }

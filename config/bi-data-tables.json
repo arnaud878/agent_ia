@@ -1,8 +1,0 @@
-{
-  "tables": [
-    "irradiance",
-    "production",
-    "puissance_installee",
-    "vente_carburant"
-  ]
-}

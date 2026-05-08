@@ -14,6 +14,7 @@ import type { Request } from 'express';
 import { Roles } from '../../common/decorators/roles.decorator';
 import { RolesGuard } from '../../common/guards/roles.guard';
 import { CreateRoleDto } from './dto/create-role.dto';
+import { SetBiTablesDto } from './dto/set-bi-tables.dto';
 import { CreateUserDto } from './dto/create-user.dto';
 import { SetRoleTablesDto } from './dto/set-role-tables.dto';
 import { UpdateUserDto } from './dto/update-user.dto';
@@ -28,6 +29,11 @@ export class RbacController {
   @Get('bi-tables')
   biTableNames() {
     return { tables: this.iam.allBiTableNamesForDocs() };
+  }
+
+  @Put('bi-tables')
+  setBiTableNames(@Body() dto: SetBiTablesDto) {
+    return this.iam.setBiTableNames(dto.tableNames);
   }
 
   @Get('roles')
