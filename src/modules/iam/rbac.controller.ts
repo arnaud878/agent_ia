@@ -14,6 +14,7 @@ import type { Request } from 'express';
 import { Roles } from '../../common/decorators/roles.decorator';
 import { RolesGuard } from '../../common/guards/roles.guard';
 import { CreateRoleDto } from './dto/create-role.dto';
+import { SetBiConnectionDto } from './dto/set-bi-connection.dto';
 import { SetBiTablesDto } from './dto/set-bi-tables.dto';
 import { CreateUserDto } from './dto/create-user.dto';
 import { SetRoleTablesDto } from './dto/set-role-tables.dto';
@@ -34,6 +35,16 @@ export class RbacController {
   @Put('bi-tables')
   setBiTableNames(@Body() dto: SetBiTablesDto) {
     return this.iam.setBiTableNames(dto.tableNames);
+  }
+
+  @Get('bi-connection')
+  getBiConnection() {
+    return this.iam.getBiConnection();
+  }
+
+  @Put('bi-connection')
+  setBiConnection(@Body() dto: SetBiConnectionDto) {
+    return this.iam.setBiConnection(dto.connectionString);
   }
 
   @Get('roles')

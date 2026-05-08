@@ -1,5 +1,5 @@
 /**
- * Tables BI par défaut (fallback si `config/bi-data-tables.json` absent ou invalide).
+ * Tables BI par défaut (seed initial si aucune table n'est encore configurée en base).
  * La source de vérité à l’exécution est `BiDataTablesService` (fichier JSON).
  */
 export const DEFAULT_BI_DATA_TABLES = [

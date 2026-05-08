@@ -344,4 +344,18 @@ export class IamService implements OnModuleInit {
       throw new BadRequestException((e as Error).message);
     }
   }
+
+  async getBiConnection(): Promise<{ connectionString: string }> {
+    const s = await this.schema.getBiConnectionString();
+    return { connectionString: s ?? '' };
+  }
+
+  async setBiConnection(connectionString: string): Promise<{ ok: true }> {
+    try {
+      await this.schema.setBiConnectionString(connectionString);
+      return { ok: true as const };
+    } catch (e) {
+      throw new BadRequestException((e as Error).message);
+    }
+  }
 }

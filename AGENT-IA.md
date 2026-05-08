@@ -19,7 +19,7 @@ Le modèle utilisé est **Google Gemini** via `@langchain/google-genai` (`ChatGo
 
 ## 2. Données et schéma
 
-Le service `SchemaService` interroge `information_schema` sur la **base analytique** (`BI_DATABASE_URL`, ou `DATABASE_URL` si non défini) et reconstruit un objet **JSON de schéma** (équivalent « Info BDD » n8n) pour les tables listées dans **`config/bi-data-tables.json`** (variable `BI_DATA_TABLES_CONFIG` pour un autre chemin) **uniquement** — par défaut :
+Le service `SchemaService` interroge `information_schema` sur la **base analytique** (connexion configurée en base via l’admin `Base BI`, ou `DATABASE_URL` si vide) et reconstruit un objet **JSON de schéma** (équivalent « Info BDD » n8n) pour les tables BI configurées en base **uniquement** — par défaut :
 
 | Table                 | Rôle (résumé)                                    |
 |-----------------------|--------------------------------------------------|
@@ -135,8 +135,6 @@ flowchart LR
 | Variable            | Rôle |
 |---------------------|------|
 | `DATABASE_URL`      | Base **application** (IAM, rôles, conversations, `n8n_chat_histories_v6`) |
-| `BI_DATABASE_URL`   | Optionnel. Base **analytique** (schéma + SQL agent). Si absent = même URL que `DATABASE_URL` |
-| `BI_DATA_TABLES_CONFIG` | Optionnel. Chemin absolu ou relatif (depuis le cwd, ex. répertoire `ia_back`) vers le JSON des tables BI (défaut `config/bi-data-tables.json`) |
 | `GOOGLE_API_KEY`    | Clé API Google (Gemini) |
 | `GEMINI_MODEL`      | Nom du modèle (ex. `gemini-3-flash-preview`) |
 | `API_CONFIG_SECRET` | Secret partagé pour l’en-tête `x-api-config` sur le webhook |
@@ -150,7 +148,7 @@ flowchart LR
 ## 10. Limites opérationnelles
 
 - **Quota / 429** : des erreurs *Too Many Requests* côté Google peuvent survenir ; ce n’est pas un défaut d’intégration application en soi, mais un plafond côté fournisseur.
-- **Tables couvertes** : seules les tables listées dans le JSON de configuration BI (`config/bi-data-tables.json` par défaut) sont exposées ; toute autre table est invisible pour l’agent.
+- **Tables couvertes** : seules les tables BI configurées en base via l’admin sont exposées ; toute autre table est invisible pour l’agent.
 - **Histoire côté client** : le DTO peut encore comporter un champ `history` — la **référence** d’historique est celle lue en base sur `chatId` (session), pas l’ancien `history` du client.
 
 ---

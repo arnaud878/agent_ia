@@ -1,4 +1,4 @@
-import { Injectable, OnModuleDestroy } from '@nestjs/common';
+import { Injectable, OnModuleDestroy, OnModuleInit } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { Pool, type QueryResult } from 'pg';
 import { BiDataTablesService } from '../../../common/bi-tables/bi-data-tables.service';
@@ -42,10 +42,10 @@ export type BddSchema = Record<
 >;
 
 @Injectable()
-export class SchemaService implements OnModuleDestroy {
+export class SchemaService implements OnModuleInit, OnModuleDestroy {
   private readonly appPool: Pool;
-  private readonly biPool: Pool;
-  private readonly biPoolIsShared: boolean;
+  private biPool: Pool;
+  private biPoolIsShared: boolean;
 
   /** Cache du JSON « Info BDD » (metadata) : évite une requête `information_schema` à chaque tour. */
   private bddJsonCache: {
@@ -58,16 +58,14 @@ export class SchemaService implements OnModuleDestroy {
     private readonly biTables: BiDataTablesService,
   ) {
     const appUrl = this.config.getOrThrow<string>('DATABASE_URL');
-    const biRaw = this.config.get<string>('BI_DATABASE_URL')?.trim() ?? '';
-    const biUrl = biRaw !== '' ? biRaw : appUrl;
     this.appPool = new Pool({ connectionString: appUrl, max: 10 });
-    if (biUrl === appUrl) {
-      this.biPool = this.appPool;
-      this.biPoolIsShared = true;
-    } else {
-      this.biPool = new Pool({ connectionString: biUrl, max: 10 });
-      this.biPoolIsShared = false;
-    }
+    this.biPool = this.appPool;
+    this.biPoolIsShared = true;
+  }
+
+  async onModuleInit() {
+    await this.ensureBiConnectionTable();
+    await this.reloadBiPoolFromSettings();
   }
 
   onModuleDestroy() {
@@ -76,6 +74,39 @@ export class SchemaService implements OnModuleDestroy {
       return closeApp;
     }
     return Promise.all([closeApp, this.biPool.end()]).then(() => undefined);
+  }
+
+  async getBiConnectionString(): Promise<string | null> {
+    const r = await this.appPool.query<{ connection_string: string }>(
+      `SELECT connection_string FROM public.bi_connection_settings WHERE id = true`,
+    );
+    const row = r.rows[0];
+    return row?.connection_string?.trim() || null;
+  }
+
+  async setBiConnectionString(connectionString: string): Promise<void> {
+    const s = connectionString.trim();
+    if (!s) {
+      await this.appPool.query(
+        `DELETE FROM public.bi_connection_settings WHERE id = true`,
+      );
+      await this.reloadBiPoolFromSettings();
+      return;
+    }
+    const testPool = new Pool({ connectionString: s, max: 1 });
+    try {
+      await testPool.query('SELECT 1');
+    } finally {
+      await testPool.end();
+    }
+    await this.appPool.query(
+      `INSERT INTO public.bi_connection_settings (id, connection_string, updated_at)
+       VALUES (true, $1, now())
+       ON CONFLICT (id)
+       DO UPDATE SET connection_string = EXCLUDED.connection_string, updated_at = now()`,
+      [s],
+    );
+    await this.reloadBiPoolFromSettings();
   }
 
   /**
@@ -102,6 +133,38 @@ export class SchemaService implements OnModuleDestroy {
       return this.biPool.query<Record<string, unknown>>(sql, params);
     }
     return this.biPool.query<Record<string, unknown>>(sql);
+  }
+
+  private async ensureBiConnectionTable(): Promise<void> {
+    await this.appPool.query(`
+      CREATE TABLE IF NOT EXISTS public.bi_connection_settings (
+        id boolean PRIMARY KEY DEFAULT true,
+        connection_string text NOT NULL,
+        updated_at timestamptz NOT NULL DEFAULT now(),
+        CONSTRAINT bi_connection_settings_singleton_chk CHECK (id = true)
+      )
+    `);
+  }
+
+  private async reloadBiPoolFromSettings(): Promise<void> {
+    const appUrl = this.config.getOrThrow<string>('DATABASE_URL');
+    const configured = await this.getBiConnectionString();
+    const biUrl = configured && configured.length > 0 ? configured : appUrl;
+    if (biUrl === appUrl) {
+      if (!this.biPoolIsShared) {
+        await this.biPool.end();
+      }
+      this.biPool = this.appPool;
+      this.biPoolIsShared = true;
+      return;
+    }
+    const newPool = new Pool({ connectionString: biUrl, max: 10 });
+    await newPool.query('SELECT 1');
+    if (!this.biPoolIsShared) {
+      await this.biPool.end();
+    }
+    this.biPool = newPool;
+    this.biPoolIsShared = false;
   }
 
   private buildBddSchemaQuery(): string {
