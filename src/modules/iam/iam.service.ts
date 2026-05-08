@@ -358,4 +358,71 @@ export class IamService implements OnModuleInit {
       throw new BadRequestException((e as Error).message);
     }
   }
+
+  async getLlmSettings(): Promise<{
+    provider: 'gemini' | 'gpt' | 'claude';
+    model: string;
+    hasApiKey: boolean;
+  }> {
+    await this.ensureLlmSettingsTable();
+    const r = await this.schema.executeAppQuery(
+      `SELECT provider, model, api_key IS NOT NULL AND length(trim(api_key)) > 0 AS "hasApiKey"
+       FROM public.bi_llm_settings
+       WHERE id = true`,
+    );
+    const row = r.rows[0] as
+      | { provider: 'gemini' | 'gpt' | 'claude'; model: string; hasApiKey: boolean }
+      | undefined;
+    if (!row) {
+      return { provider: 'gemini', model: 'gemini-2.5-flash', hasApiKey: false };
+    }
+    return row;
+  }
+
+  async setLlmSettings(input: {
+    provider: 'gemini' | 'gpt' | 'claude';
+    model: string;
+    apiKey?: string;
+  }): Promise<{ ok: true }> {
+    await this.ensureLlmSettingsTable();
+    const provider = input.provider;
+    const model = String(input.model || '').trim();
+    if (!model) {
+      throw new BadRequestException('Le modèle est obligatoire.');
+    }
+    const hasApiKeyField = Object.prototype.hasOwnProperty.call(input, 'apiKey');
+    if (hasApiKeyField) {
+      const apiKey = (input.apiKey ?? '').trim();
+      await this.schema.executeAppQuery(
+        `INSERT INTO public.bi_llm_settings (id, provider, model, api_key, updated_at)
+         VALUES (true, $1, $2, NULLIF($3, ''), now())
+         ON CONFLICT (id)
+         DO UPDATE SET provider = EXCLUDED.provider, model = EXCLUDED.model, api_key = NULLIF($3, ''), updated_at = now()`,
+        [provider, model, apiKey],
+      );
+      return { ok: true as const };
+    }
+    await this.schema.executeAppQuery(
+      `INSERT INTO public.bi_llm_settings (id, provider, model, updated_at)
+       VALUES (true, $1, $2, now())
+       ON CONFLICT (id)
+       DO UPDATE SET provider = EXCLUDED.provider, model = EXCLUDED.model, updated_at = now()`,
+      [provider, model],
+    );
+    return { ok: true as const };
+  }
+
+  private async ensureLlmSettingsTable(): Promise<void> {
+    await this.schema.executeAppQuery(`
+      CREATE TABLE IF NOT EXISTS public.bi_llm_settings (
+        id boolean PRIMARY KEY DEFAULT true,
+        provider varchar(20) NOT NULL DEFAULT 'gemini',
+        model varchar(120) NOT NULL DEFAULT 'gemini-2.5-flash',
+        api_key text,
+        updated_at timestamptz NOT NULL DEFAULT now(),
+        CONSTRAINT bi_llm_settings_singleton_chk CHECK (id = true),
+        CONSTRAINT bi_llm_settings_provider_chk CHECK (provider IN ('gemini', 'gpt', 'claude'))
+      )
+    `);
+  }
 }

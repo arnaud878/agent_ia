@@ -12,6 +12,8 @@ import {
   ToolMessage,
 } from '@langchain/core/messages';
 import { ChatGoogleGenerativeAI } from '@langchain/google-genai';
+import { ChatOpenAI } from '@langchain/openai';
+import { ChatAnthropic } from '@langchain/anthropic';
 import { createReactAgent } from '@langchain/langgraph/prebuilt';
 import { buildBiTools } from '../lib/bi-tools';
 import {
@@ -43,6 +45,14 @@ export type BiStreamEvent =
   | { t: 'status'; m: string }
   | ({ t: 'done'; output: string } & BiAgentOutput)
   | { t: 'error'; message: string };
+
+type LlmProvider = 'gemini' | 'gpt' | 'claude';
+
+type RuntimeLlmSettings = {
+  provider: LlmProvider;
+  model: string;
+  apiKey: string;
+};
 
 @Injectable()
 export class BiAgentService {
@@ -85,6 +95,72 @@ export class BiAgentService {
     raw: 'quick' | 'pro' | undefined,
   ): BiResponseMode {
     return raw === 'quick' ? 'quick' : 'pro';
+  }
+
+  private async resolveRuntimeLlmSettings(): Promise<RuntimeLlmSettings> {
+    const defaultProvider: LlmProvider = 'gemini';
+    const defaultModelByProvider: Record<LlmProvider, string> = {
+      gemini: this.config.get<string>('GEMINI_MODEL') ?? 'gemini-2.5-flash',
+      gpt: this.config.get<string>('OPENAI_MODEL') ?? 'gpt-4.1-mini',
+      claude:
+        this.config.get<string>('ANTHROPIC_MODEL') ?? 'claude-3-5-sonnet-latest',
+    };
+    const defaultKeyByProvider: Record<LlmProvider, string | undefined> = {
+      gemini: this.config.get<string>('GOOGLE_API_KEY'),
+      gpt: this.config.get<string>('OPENAI_API_KEY'),
+      claude: this.config.get<string>('ANTHROPIC_API_KEY'),
+    };
+
+    let row:
+      | { provider?: string; model?: string; apiKey?: string | null }
+      | undefined;
+    try {
+      const r = await this.schema.executeAppQuery(
+        `SELECT provider, model, api_key AS "apiKey"
+         FROM public.bi_llm_settings
+         WHERE id = true`,
+      );
+      row = r.rows[0] as
+        | { provider?: string; model?: string; apiKey?: string | null }
+        | undefined;
+    } catch {
+      row = undefined;
+    }
+    const provider =
+      row?.provider === 'gpt' || row?.provider === 'claude' || row?.provider === 'gemini'
+        ? row.provider
+        : defaultProvider;
+    const model = String(row?.model ?? defaultModelByProvider[provider]).trim();
+    const apiKey = String(row?.apiKey ?? defaultKeyByProvider[provider] ?? '').trim();
+
+    if (!apiKey) {
+      throw new BadRequestException(
+        `Clé API LLM manquante pour le provider ${provider}. Configurez-la dans Admin > Base BI.`,
+      );
+    }
+    return { provider, model, apiKey };
+  }
+
+  private buildRuntimeModel(settings: RuntimeLlmSettings) {
+    if (settings.provider === 'gpt') {
+      return new ChatOpenAI({
+        model: settings.model,
+        temperature: 0.15,
+        apiKey: settings.apiKey,
+      });
+    }
+    if (settings.provider === 'claude') {
+      return new ChatAnthropic({
+        model: settings.model,
+        temperature: 0.15,
+        apiKey: settings.apiKey,
+      });
+    }
+    return new ChatGoogleGenerativeAI({
+      model: settings.model,
+      temperature: 0.15,
+      apiKey: settings.apiKey,
+    });
   }
 
   private async prepareAgentOrGreeting(input: {
@@ -139,13 +215,8 @@ export class BiAgentService {
     const formuleKpi = this.prompts.getFormuleKpiTemplate();
     const responseMode = this.normalizeResponseMode(input.responseMode);
     const system = this.prompts.buildSystemMessage(bdd, formuleKpi, responseMode);
-    const geminiModel: string =
-      this.config.get<string>('GEMINI_MODEL') ?? 'gemini-3-flash-preview';
-    const model = new ChatGoogleGenerativeAI({
-      model: geminiModel,
-      temperature: 0.15,
-      apiKey: this.config.getOrThrow<string>('GOOGLE_API_KEY'),
-    });
+    const llmSettings = await this.resolveRuntimeLlmSettings();
+    const model = this.buildRuntimeModel(llmSettings);
     const tools = buildBiTools(
       this.schema,
       input.dataAccess,

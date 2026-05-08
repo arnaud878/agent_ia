@@ -16,6 +16,7 @@ import { RolesGuard } from '../../common/guards/roles.guard';
 import { CreateRoleDto } from './dto/create-role.dto';
 import { SetBiConnectionDto } from './dto/set-bi-connection.dto';
 import { SetBiTablesDto } from './dto/set-bi-tables.dto';
+import { SetLlmSettingsDto } from './dto/set-llm-settings.dto';
 import { CreateUserDto } from './dto/create-user.dto';
 import { SetRoleTablesDto } from './dto/set-role-tables.dto';
 import { UpdateUserDto } from './dto/update-user.dto';
@@ -45,6 +46,20 @@ export class RbacController {
   @Put('bi-connection')
   setBiConnection(@Body() dto: SetBiConnectionDto) {
     return this.iam.setBiConnection(dto.connectionString);
+  }
+
+  @Get('llm-settings')
+  getLlmSettings() {
+    return this.iam.getLlmSettings();
+  }
+
+  @Put('llm-settings')
+  setLlmSettings(@Body() dto: SetLlmSettingsDto) {
+    return this.iam.setLlmSettings({
+      provider: dto.provider,
+      model: dto.model,
+      apiKey: dto.apiKey,
+    });
   }
 
   @Get('roles')
