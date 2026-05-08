@@ -4,6 +4,8 @@ import { JwtModule } from '@nestjs/jwt';
 import { PassportModule } from '@nestjs/passport';
 import { RolesGuard } from '../../common/guards/roles.guard';
 import { BiModule } from '../bi/bi.module';
+import { AdminConversationsController } from './admin-conversations.controller';
+import { AdminConversationsService } from './admin-conversations.service';
 import { AuthController } from './auth.controller';
 import { AuthService } from './auth.service';
 import { IamService } from './iam.service';
@@ -25,8 +27,8 @@ import { RbacController } from './rbac.controller';
       }),
     }),
   ],
-  controllers: [AuthController, RbacController, ConversationsController],
-  providers: [IamService, AuthService, JwtStrategy, RolesGuard, ConversationsService],
+  controllers: [AuthController, RbacController, ConversationsController, AdminConversationsController],
+  providers: [IamService, AuthService, JwtStrategy, RolesGuard, ConversationsService, AdminConversationsService],
   exports: [IamService, AuthService, JwtModule],
 })
 export class IamModule {}

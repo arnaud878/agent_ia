@@ -24,6 +24,8 @@ export type UiMessageRow = {
   text: string | null;
   html: string | null;
   durationMs: number | null;
+  requeteSQL: string | null;
+  resultatSQL: string | null;
   createdAt: string;
 };
 
@@ -200,6 +202,8 @@ export class ConversationsService {
         body_text AS "text",
         body_html AS "html",
         duration_ms AS "durationMs",
+        requete_sql AS "requeteSQL",
+        resultat_sql AS "resultatSQL",
         created_at AS "createdAt"
       FROM public.bi_conversation_messages
       WHERE conversation_id = $1
@@ -217,6 +221,8 @@ export class ConversationsService {
         r['durationMs'] === null || r['durationMs'] === undefined
           ? null
           : Number(r['durationMs']),
+      requeteSQL: (r['requeteSQL'] as string | null) ?? null,
+      resultatSQL: (r['resultatSQL'] as string | null) ?? null,
       createdAt: String(r['createdAt'] ?? ''),
     })) as UiMessageRow[];
   }
@@ -229,6 +235,8 @@ export class ConversationsService {
       text?: string | null;
       html?: string | null;
       durationMs?: number | null;
+      requeteSQL?: string | null;
+      resultatSQL?: string | null;
     },
   ): Promise<{ id: string }> {
     await this.ensureOwner(userId, conversationId);
@@ -245,12 +253,15 @@ export class ConversationsService {
         ? null
         : Math.min(1_000_000, Math.max(0, body.durationMs));
 
+    const rSql = body.requeteSQL?.trim() || null;
+    const resSql = body.resultatSQL?.trim() || null;
+
     const ins = (await this.schema.executeAppQuery(
       `INSERT INTO public.bi_conversation_messages
-         (conversation_id, role, body_text, body_html, duration_ms)
-       VALUES ($1, $2, $3, $4, $5)
+         (conversation_id, role, body_text, body_html, duration_ms, requete_sql, resultat_sql)
+       VALUES ($1, $2, $3, $4, $5, $6, $7)
        RETURNING id`,
-      [conversationId, body.role, t, h, dur],
+      [conversationId, body.role, t, h, dur, rSql, resSql],
     )) as QueryResult<{ id: string }>;
     const id = (ins.rows[0] as { id: string } | undefined)?.id;
     if (!id) {

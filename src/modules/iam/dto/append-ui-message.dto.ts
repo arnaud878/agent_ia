@@ -18,4 +18,14 @@ export class AppendUiMessageDto {
   @IsInt()
   @Min(0)
   durationMs?: number | null;
+
+  @IsOptional()
+  @IsString()
+  @MaxLength(50_000)
+  requeteSQL?: string | null;
+
+  @IsOptional()
+  @IsString()
+  @MaxLength(200_000)
+  resultatSQL?: string | null;
 }

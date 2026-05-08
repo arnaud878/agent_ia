@@ -202,7 +202,12 @@ export class BiAgentService {
       });
       throw new InternalServerErrorException('Sortie structurée manquante');
     }
-    const out = { output: this.cleanHtml(sr.html), ...sr };
+    const rawSqlResult = this.extractLastRawSqlResult(res.messages);
+    const out = {
+      output: this.cleanHtml(sr.html),
+      ...sr,
+      resultatSQL: rawSqlResult ?? sr.resultatSQL,
+    };
     await this.persistTurn(input.chatId, ctx.userText, out);
     return out;
   }
@@ -301,7 +306,12 @@ export class BiAgentService {
           ? 'Préparation de la réponse (mode rapide, sans graphique)…'
           : 'Préparation et mise en forme de la réponse (texte, graphiques)…',
     };
-    const out = { output: this.cleanHtml(sr.html), ...sr } as {
+    const rawSqlResult = this.extractLastRawSqlResult(lastState?.messages);
+    const out = {
+      output: this.cleanHtml(sr.html),
+      ...sr,
+      resultatSQL: rawSqlResult ?? sr.resultatSQL,
+    } as {
       output: string;
     } & BiAgentOutput;
     await this.persistTurn(input.chatId, ctx.userText, out);
@@ -323,6 +333,29 @@ export class BiAgentService {
 
   private cleanHtml(raw: string): string {
     return raw.replace(/^```html\s*/i, '').replace(/\s*```$/g, '');
+  }
+
+  private toolMessageContentAsText(m: ToolMessage): string {
+    return typeof m.content === 'string' ? m.content : JSON.stringify(m.content);
+  }
+
+  private extractLastRawSqlResult(
+    messages: BaseMessage[] | unknown[] | undefined,
+  ): string | null {
+    if (!Array.isArray(messages) || messages.length === 0) {
+      return null;
+    }
+    for (let i = messages.length - 1; i >= 0; i--) {
+      const msg = messages[i];
+      if (!ToolMessage.isInstance(msg)) {
+        continue;
+      }
+      const name = inferToolNameFromMessage(msg).toLowerCase();
+      if (name.includes('sql')) {
+        return this.toolMessageContentAsText(msg);
+      }
+    }
+    return null;
   }
 
   private assistantMemoryText(sr: BiAgentOutput, outputHtml: string): string {

@@ -65,6 +65,8 @@ export class ConversationsController {
       text: body.text,
       html: body.html,
       durationMs: body.durationMs,
+      requeteSQL: body.requeteSQL,
+      resultatSQL: body.resultatSQL,
     });
   }
 
