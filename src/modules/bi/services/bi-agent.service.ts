@@ -151,11 +151,26 @@ export class BiAgentService {
     return { provider, model, apiKey };
   }
 
+  /** Limite de sortie agent principal (réduit troncatures JSON / OUTPUT_PARSING_FAILURE). */
+  private agentMaxOutputTokens(): number {
+    const raw = this.config.get<string>('AGENT_MAX_OUTPUT_TOKENS');
+    if (raw == null || String(raw).trim() === '') {
+      return 8192;
+    }
+    const n = parseInt(String(raw), 10);
+    if (!Number.isFinite(n) || n < 2048) {
+      return 8192;
+    }
+    return Math.min(65536, n);
+  }
+
   private buildRuntimeModel(settings: RuntimeLlmSettings) {
+    const cap = this.agentMaxOutputTokens();
     if (settings.provider === 'gpt') {
       return new ChatOpenAI({
         model: settings.model,
         temperature: 0.15,
+        maxTokens: cap,
         apiKey: settings.apiKey,
       });
     }
@@ -163,6 +178,7 @@ export class BiAgentService {
       return new ChatAnthropic({
         model: settings.model,
         temperature: 0.15,
+        maxTokens: cap,
         apiKey: settings.apiKey,
       });
     }
@@ -170,6 +186,7 @@ export class BiAgentService {
       model: settings.model,
       temperature: 0.15,
       apiKey: settings.apiKey,
+      maxOutputTokens: cap,
     });
   }
 
@@ -201,7 +218,7 @@ export class BiAgentService {
     });
   }
 
-  /** Repli si withStructuredOutput échoue (JSON coupé, parseur LangChain, etc.). */
+  /** Classifieur : invocation JSON + Zod uniquement (évite OUTPUT_PARSING_FAILURE de withStructuredOutput). */
   private async invokeIntentClassifierPlainJson(
     mini: ChatOpenAI | ChatAnthropic | ChatGoogleGenerativeAI,
     userText: string,
@@ -269,22 +286,7 @@ export class BiAgentService {
     try {
       const llmSettings = await this.resolveRuntimeLlmSettings();
       const mini = this.buildIntentClassifierModel(llmSettings);
-      let raw: SocialTrivialIntent | null = null;
-      try {
-        const structured = mini.withStructuredOutput(
-          socialTrivialIntentSchema,
-          { name: 'intent_classifier' },
-        );
-        raw = await structured.invoke([
-          new SystemMessage(SOCIAL_TRIVIAL_CLASSIFIER_SYSTEM),
-          new HumanMessage(m),
-        ]);
-      } catch (e) {
-        this.log.warn(
-          `Classifieur structuredOutput en échec, repli JSON brut: ${e}`,
-        );
-        raw = await this.invokeIntentClassifierPlainJson(mini, m);
-      }
+      const raw = await this.invokeIntentClassifierPlainJson(mini, m);
       if (!raw) {
         this.log.warn(
           'classifyUserMessageIntent: sortie classifieur vide, branche agent complète',
@@ -429,7 +431,12 @@ export class BiAgentService {
       { messages: ctx.baseMessages },
       { recursionLimit: this.agentRecursionLimit() },
     )) as { structuredResponse?: BiAgentOutput; messages?: unknown[] };
-    const sr = res.structuredResponse;
+    let sr = res.structuredResponse;
+    if (!sr) {
+      sr = this.tryRecoverBiOutputFromMessages(
+        res.messages as BaseMessage[] | undefined,
+      ) ?? undefined;
+    }
     if (!sr) {
       this.log.error('structuredResponse manquant, état: %j', {
         msgCount: (res as { messages?: unknown[] })?.messages?.length,
@@ -530,7 +537,10 @@ export class BiAgentService {
         lastIndex = msgs.length;
       }
     }
-    const sr = lastState?.structuredResponse;
+    let sr = lastState?.structuredResponse;
+    if (!sr) {
+      sr = this.tryRecoverBiOutputFromMessages(lastState?.messages) ?? undefined;
+    }
     if (!sr) {
       this.log.error(
         'structuredResponse manquant (stream), lastState: %j',
@@ -573,6 +583,64 @@ export class BiAgentService {
 
   private cleanHtml(raw: string): string {
     return raw.replace(/^```html\s*/i, '').replace(/\s*```$/g, '');
+  }
+
+  private messageContentAsText(content: unknown): string {
+    if (typeof content === 'string') {
+      return content;
+    }
+    if (Array.isArray(content)) {
+      const parts: string[] = [];
+      for (const block of content) {
+        if (typeof block === 'string') {
+          parts.push(block);
+          continue;
+        }
+        if (block && typeof block === 'object' && 'text' in block) {
+          const t = (block as { text?: unknown }).text;
+          if (typeof t === 'string') {
+            parts.push(t);
+          }
+        }
+      }
+      return parts.join('');
+    }
+    return '';
+  }
+
+  /**
+   * Si LangGraph ne remplit pas structuredResponse (ex. OUTPUT_PARSING_FAILURE),
+   * tente d’extraire le premier objet JSON valide depuis les derniers AIMessage.
+   */
+  private tryRecoverBiOutputFromMessages(
+    messages: BaseMessage[] | unknown[] | undefined,
+  ): BiAgentOutput | null {
+    if (!Array.isArray(messages) || messages.length === 0) {
+      return null;
+    }
+    for (let i = messages.length - 1; i >= 0; i--) {
+      const msg = messages[i];
+      if (!AIMessage.isInstance(msg)) {
+        continue;
+      }
+      const text = this.messageContentAsText(msg.content);
+      if (!text || text.length < 12) {
+        continue;
+      }
+      try {
+        const obj = extractFirstJsonObject(text);
+        const parsed = biAgentOutputSchema.safeParse(obj);
+        if (parsed.success) {
+          this.log.warn(
+            'Réponse structurée récupérée depuis le contenu brut du modèle (repli parsing LangGraph)',
+          );
+          return parsed.data;
+        }
+      } catch {
+        /* message précédent */
+      }
+    }
+    return null;
   }
 
   private toolMessageContentAsText(m: ToolMessage): string {
