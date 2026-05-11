@@ -1,4 +1,4 @@
-import { IsArray, IsIn, IsOptional, IsString } from 'class-validator';
+import { IsArray, IsIn, IsOptional, IsString, IsUUID } from 'class-validator';
 
 export class WebhookBodyDto {
   @IsString()
@@ -22,4 +22,9 @@ export class WebhookBodyDto {
   @IsOptional()
   @IsIn(['quick', 'pro'])
   responseMode?: 'quick' | 'pro';
+
+  @IsOptional()
+  @IsArray()
+  @IsUUID('4', { each: true })
+  attachmentIds?: string[];
 }

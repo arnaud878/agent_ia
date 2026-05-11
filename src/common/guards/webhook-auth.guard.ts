@@ -44,6 +44,7 @@ export class WebhookAuthGuard implements CanActivate {
           });
         }
         req.dataAccess = da;
+        req.authUserId = payload.sub;
         return true;
       } catch (e) {
         if (e instanceof UnauthorizedException) {
@@ -70,6 +71,7 @@ export class WebhookAuthGuard implements CanActivate {
       throw new UnauthorizedException({ message: 'unauthorized token' });
     }
     req.dataAccess = { kind: 'all' } satisfies DataAccess;
+    req.authUserId = undefined;
     return true;
   }
 }

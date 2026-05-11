@@ -16,6 +16,7 @@ import {
 import { WebhookAuthGuard } from '../../common/guards/webhook-auth.guard';
 import type { DataAccess } from '../../common/types/data-access';
 import { BiAgentService } from '../bi/services/bi-agent.service';
+import { ConversationAttachmentsService } from '../iam/conversation-attachments.service';
 import { WebhookBodyDto } from './dto/webhook-body.dto';
 
 function streamErrorMessage(e: unknown): string {
@@ -37,13 +38,59 @@ function streamErrorMessage(e: unknown): string {
 export class WebhookController {
   private readonly log = new Logger(WebhookController.name);
 
-  constructor(private readonly biAgent: BiAgentService) {}
+  constructor(
+    private readonly biAgent: BiAgentService,
+    private readonly attachments: ConversationAttachmentsService,
+  ) {}
+
+  private async enrichMessageWithAttachments(
+    req: Request,
+    body: WebhookBodyDto,
+  ): Promise<{ message: string; statusLine: string | null }> {
+    const ids = body.attachmentIds ?? [];
+    if (!ids.length) {
+      return { message: body.message, statusLine: null };
+    }
+    const userId = req.authUserId;
+    if (!userId) {
+      return { message: body.message, statusLine: null };
+    }
+    const context = await this.attachments.buildContextForPrompt({
+      userId,
+      conversationId: body.chatId,
+      attachmentIds: ids,
+      query: body.message,
+    });
+    if (!context) {
+      return {
+        message: `${body.message}
+
+[CONSIGNE_FICHIER]
+Des fichiers sont bien joints à cette demande, mais aucun extrait n'est disponible.
+Ne dis jamais "fichier non fourni". Indique plutôt qu'il faut extraction avancée/OCR pour analyse détaillée.
+[/CONSIGNE_FICHIER]`,
+        statusLine: `Lecture de ${ids.length} fichier(s) joint(s)…`,
+      };
+    }
+    return {
+      message: `${body.message}
+
+[CONSIGNE_FICHIER]
+Les fichiers joints sont disponibles et les extraits ci-dessous sont fournis.
+Analyse ces extraits directement dans ta réponse. Ne dis jamais que le fichier est absent/non fourni.
+[/CONSIGNE_FICHIER]
+
+${context}`,
+      statusLine: `Lecture de ${ids.length} fichier(s) joint(s)…`,
+    };
+  }
 
   @Post(N8N_WEBHOOK_PATH_SEGMENT)
   async handle(@Body() body: WebhookBodyDto, @Req() req: Request) {
     const dataAccess = req.dataAccess as DataAccess;
+    const prep = await this.enrichMessageWithAttachments(req, body);
     return this.biAgent.runChat({
-      message: body.message,
+      message: prep.message,
       chatId: body.chatId,
       dataAccess,
       responseMode: body.responseMode,
@@ -65,8 +112,12 @@ export class WebhookController {
     res.setHeader('X-Bi-Stream-Version', BI_STREAM_VERSION_HEADER);
     const dataAccess = req.dataAccess as DataAccess;
     try {
+      const prep = await this.enrichMessageWithAttachments(req, body);
+      if (prep.statusLine) {
+        res.write(`${JSON.stringify({ t: 'status' as const, m: prep.statusLine })}\n`);
+      }
       for await (const ev of this.biAgent.streamChat({
-        message: body.message,
+        message: prep.message,
         chatId: body.chatId,
         dataAccess,
         responseMode: body.responseMode,

@@ -12,6 +12,7 @@ import { IamService } from './iam.service';
 import { JwtStrategy } from './jwt.strategy';
 import { ConversationsController } from './conversations.controller';
 import { ConversationsService } from './conversations.service';
+import { ConversationAttachmentsService } from './conversation-attachments.service';
 import { RbacController } from './rbac.controller';
 
 @Module({
@@ -28,7 +29,15 @@ import { RbacController } from './rbac.controller';
     }),
   ],
   controllers: [AuthController, RbacController, ConversationsController, AdminConversationsController],
-  providers: [IamService, AuthService, JwtStrategy, RolesGuard, ConversationsService, AdminConversationsService],
-  exports: [IamService, AuthService, JwtModule],
+  providers: [
+    IamService,
+    AuthService,
+    JwtStrategy,
+    RolesGuard,
+    ConversationsService,
+    ConversationAttachmentsService,
+    AdminConversationsService,
+  ],
+  exports: [IamService, AuthService, JwtModule, ConversationsService, ConversationAttachmentsService],
 })
 export class IamModule {}

@@ -3,18 +3,23 @@ import {
   Controller,
   Delete,
   Get,
+  HttpCode,
   Param,
   ParseUUIDPipe,
   Patch,
   Post,
   Req,
   UseGuards,
+  UseInterceptors,
+  UploadedFile,
 } from '@nestjs/common';
 import { AuthGuard } from '@nestjs/passport';
 import type { Request } from 'express';
+import { FileInterceptor } from '@nestjs/platform-express';
 import { AppendUiMessageDto } from './dto/append-ui-message.dto';
 import { CreateConversationDto } from './dto/create-conversation.dto';
 import { PatchConversationDto } from './dto/patch-conversation.dto';
+import { ConversationAttachmentsService, type ConversationAttachmentRow } from './conversation-attachments.service';
 import type { AuthUserPayload } from './iam.service';
 import {
   ConversationsService,
@@ -25,7 +30,10 @@ import {
 @Controller('iam')
 @UseGuards(AuthGuard('jwt'))
 export class ConversationsController {
-  constructor(private readonly conversations: ConversationsService) {}
+  constructor(
+    private readonly conversations: ConversationsService,
+    private readonly attachments: ConversationAttachmentsService,
+  ) {}
 
   @Get('conversations')
   list(@Req() req: Request & { user: AuthUserPayload }): Promise<
@@ -90,5 +98,40 @@ export class ConversationsController {
   ): Promise<{ ok: true }> {
     await this.conversations.remove(req.user.id, id);
     return { ok: true };
+  }
+
+  @Get('conversations/:id/attachments')
+  listAttachments(
+    @Param('id', ParseUUIDPipe) id: string,
+    @Req() req: Request & { user: AuthUserPayload },
+  ): Promise<ConversationAttachmentRow[]> {
+    return this.attachments.listForConversation(req.user.id, id);
+  }
+
+  @Post('conversations/:id/attachments')
+  @UseInterceptors(FileInterceptor('file'))
+  uploadAttachment(
+    @Param('id', ParseUUIDPipe) id: string,
+    @UploadedFile() file:
+      | {
+          size: number;
+          mimetype: string;
+          originalname: string;
+          buffer: Buffer;
+        }
+      | undefined,
+    @Req() req: Request & { user: AuthUserPayload },
+  ): Promise<ConversationAttachmentRow> {
+    return this.attachments.createForConversation(req.user.id, id, file);
+  }
+
+  @Delete('conversations/:id/attachments/:attachmentId')
+  @HttpCode(204)
+  async removeAttachment(
+    @Param('id', ParseUUIDPipe) id: string,
+    @Param('attachmentId', ParseUUIDPipe) attachmentId: string,
+    @Req() req: Request & { user: AuthUserPayload },
+  ): Promise<void> {
+    await this.attachments.removeForConversation(req.user.id, id, attachmentId);
   }
 }

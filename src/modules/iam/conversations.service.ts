@@ -9,6 +9,7 @@ import {
 import { randomBytes, randomUUID } from 'node:crypto';
 import type { QueryResult } from 'pg';
 import { SchemaService } from '../bi/services/schema.service';
+import { ConversationAttachmentsService } from './conversation-attachments.service';
 
 export type ConversationRow = {
   id: string;
@@ -37,7 +38,10 @@ const LOAD_MESSAGES_MAX = 20_000;
 export class ConversationsService {
   private readonly log = new Logger(ConversationsService.name);
 
-  constructor(private readonly schema: SchemaService) {}
+  constructor(
+    private readonly schema: SchemaService,
+    private readonly attachments: ConversationAttachmentsService,
+  ) {}
 
   private async nextUniqueDisplayKey(): Promise<string> {
     for (let i = 0; i < 8; i++) {
@@ -280,6 +284,7 @@ export class ConversationsService {
 
   async remove(userId: string, conversationId: string): Promise<void> {
     await this.ensureOwner(userId, conversationId);
+    await this.attachments.purgeFilesForConversation(conversationId).catch(() => {});
     try {
       await this.schema.executeAppQuery(
         `DELETE FROM public.n8n_chat_histories_v6
