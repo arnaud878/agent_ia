@@ -9,6 +9,7 @@ import {
   AIMessage,
   BaseMessage,
   HumanMessage,
+  SystemMessage,
   ToolMessage,
 } from '@langchain/core/messages';
 import { ChatGoogleGenerativeAI } from '@langchain/google-genai';
@@ -20,10 +21,19 @@ import {
   biAgentOutputSchema,
   type BiAgentOutput,
 } from '../schemas/bi-output.schema';
+import { buildTrivialShortReply } from '../lib/trivial-short-reply';
+import { extractFirstJsonObject } from '../lib/extract-json-object';
 import {
-  buildGreetingResponse,
-  isSimpleGreeting,
-} from '../lib/greeting-fast-path';
+  inferReplyLocaleFromText,
+  INTENT_CLASSIFIER_JSON_SUFFIX,
+  replyLocaleSchema,
+  SOCIAL_TRIVIAL_CLASSIFIER_SYSTEM,
+  socialTrivialIntentSchema,
+  trivialShortToneSchema,
+  type ReplyLocale,
+  type SocialTrivialIntent,
+  type TrivialShortTone,
+} from '../lib/message-intent-classifier';
 import {
   extractToolCallName,
   humanizeToolCallBatch,
@@ -163,11 +173,149 @@ export class BiAgentService {
     });
   }
 
+  /** Modèle court, température 0, pour la classification d’intention (pas l’agent outils). */
+  private buildIntentClassifierModel(settings: RuntimeLlmSettings) {
+    /** Marge large : sortie structurée / JSON Gemini peut être tronquée si trop bas. */
+    const cap = 1024;
+    if (settings.provider === 'gpt') {
+      return new ChatOpenAI({
+        model: settings.model,
+        temperature: 0,
+        maxTokens: cap,
+        apiKey: settings.apiKey,
+      });
+    }
+    if (settings.provider === 'claude') {
+      return new ChatAnthropic({
+        model: settings.model,
+        temperature: 0,
+        maxTokens: cap,
+        apiKey: settings.apiKey,
+      });
+    }
+    return new ChatGoogleGenerativeAI({
+      model: settings.model,
+      temperature: 0,
+      apiKey: settings.apiKey,
+      maxOutputTokens: cap,
+    });
+  }
+
+  /** Repli si withStructuredOutput échoue (JSON coupé, parseur LangChain, etc.). */
+  private async invokeIntentClassifierPlainJson(
+    mini: ChatOpenAI | ChatAnthropic | ChatGoogleGenerativeAI,
+    userText: string,
+  ): Promise<SocialTrivialIntent | null> {
+    try {
+      const res = await mini.invoke([
+        new SystemMessage(
+          SOCIAL_TRIVIAL_CLASSIFIER_SYSTEM + INTENT_CLASSIFIER_JSON_SUFFIX,
+        ),
+        new HumanMessage(userText),
+      ]);
+      const content =
+        typeof res.content === 'string'
+          ? res.content
+          : JSON.stringify(res.content);
+      const obj = extractFirstJsonObject(content);
+      const parsed = socialTrivialIntentSchema.safeParse(obj);
+      return parsed.success ? parsed.data : null;
+    } catch (e) {
+      this.log.warn(`invokeIntentClassifierPlainJson: ${e}`);
+      return null;
+    }
+  }
+
+  private mapClassifierToIntent(
+    out: SocialTrivialIntent,
+    userMessage: string,
+    fallbackLoc: ReplyLocale,
+  ): {
+    trivial: boolean;
+    shortTone: TrivialShortTone;
+    replyLocale: ReplyLocale;
+  } {
+    const m = userMessage.trim();
+    const trivial = out.trivial === true;
+    let shortTone: TrivialShortTone = 'generic';
+    if (trivial) {
+      const parsed = trivialShortToneSchema.safeParse(out.shortTone);
+      shortTone = parsed.success ? parsed.data : 'generic';
+    }
+    let replyLocale: ReplyLocale = inferReplyLocaleFromText(m);
+    const locParsed = replyLocaleSchema.safeParse(out.replyLocale);
+    if (locParsed.success) {
+      replyLocale = locParsed.data;
+    }
+    return { trivial, shortTone, replyLocale };
+  }
+
+  /**
+   * Agent classifieur (LLM + schéma) : trivial + ton de la réponse courte (merci ≠ bonjour).
+   */
+  async classifyUserMessageIntent(message: string): Promise<{
+    trivial: boolean;
+    shortTone: TrivialShortTone;
+    replyLocale: ReplyLocale;
+  }> {
+    const m = message.trim();
+    const fallbackLoc = inferReplyLocaleFromText(message);
+    if (!m) {
+      return { trivial: true, shortTone: 'generic', replyLocale: fallbackLoc };
+    }
+    if (m.length > 6_000) {
+      return { trivial: false, shortTone: 'generic', replyLocale: fallbackLoc };
+    }
+    try {
+      const llmSettings = await this.resolveRuntimeLlmSettings();
+      const mini = this.buildIntentClassifierModel(llmSettings);
+      let raw: SocialTrivialIntent | null = null;
+      try {
+        const structured = mini.withStructuredOutput(
+          socialTrivialIntentSchema,
+          { name: 'intent_classifier' },
+        );
+        raw = await structured.invoke([
+          new SystemMessage(SOCIAL_TRIVIAL_CLASSIFIER_SYSTEM),
+          new HumanMessage(m),
+        ]);
+      } catch (e) {
+        this.log.warn(
+          `Classifieur structuredOutput en échec, repli JSON brut: ${e}`,
+        );
+        raw = await this.invokeIntentClassifierPlainJson(mini, m);
+      }
+      if (!raw) {
+        this.log.warn(
+          'classifyUserMessageIntent: sortie classifieur vide, branche agent complète',
+        );
+        return { trivial: false, shortTone: 'generic', replyLocale: fallbackLoc };
+      }
+      const { trivial, shortTone, replyLocale } = this.mapClassifierToIntent(
+        raw,
+        m,
+        fallbackLoc,
+      );
+      this.log.debug(
+        `Classifieur d’intention: trivial=${trivial} shortTone=${shortTone} replyLocale=${replyLocale}`,
+      );
+      return { trivial, shortTone, replyLocale };
+    } catch (e) {
+      this.log.warn(
+        `classifyUserMessageIntent échoué, branche agent complète: ${e}`,
+      );
+      return { trivial: false, shortTone: 'generic', replyLocale: fallbackLoc };
+    }
+  }
+
   private async prepareAgentOrGreeting(input: {
     message: string;
     chatId: string;
     dataAccess: DataAccess;
     responseMode?: 'quick' | 'pro';
+    trivialSocial: boolean;
+    trivialShortTone?: TrivialShortTone;
+    trivialReplyLocale?: ReplyLocale;
   }): Promise<
     | {
         kind: 'greeting';
@@ -185,9 +333,13 @@ export class BiAgentService {
       throw new BadRequestException(USER_MESSAGE_BLOCKED);
     }
 
-    if (isSimpleGreeting(input.message)) {
-      this.log.debug('Salutation détectée → réponse rapide (sans LLM)');
-      const out = buildGreetingResponse();
+    if (input.trivialSocial) {
+      const tone = input.trivialShortTone ?? 'generic';
+      const locale = input.trivialReplyLocale ?? 'fr';
+      this.log.debug(
+        `Classifieur: trivial → réponse courte (ton=${tone}, locale=${locale}) sans agent outils`,
+      );
+      const out = buildTrivialShortReply(tone, locale);
       return { kind: 'greeting', out };
     }
 
@@ -228,7 +380,12 @@ export class BiAgentService {
       prompt: system,
       responseFormat: biAgentOutputSchema,
     });
-    const line = `(date now : ${new Date().toISOString()}) , ${input.message}`;
+    const userLoc = inferReplyLocaleFromText(input.message);
+    const langHint =
+      userLoc === 'en'
+        ? ' [Instruction: user writes in English — produce user-facing text in English.]'
+        : '';
+    const line = `(date now : ${new Date().toISOString()}) , ${input.message}${langHint}`;
     const baseMessages: BaseMessage[] = past.map((p) => {
       if (p.role === 'user') {
         return new HumanMessage(p.text);
@@ -252,10 +409,16 @@ export class BiAgentService {
     chatId: string;
     dataAccess?: DataAccess;
     responseMode?: 'quick' | 'pro';
+    trivialSocial: boolean;
+    trivialShortTone?: TrivialShortTone;
+    trivialReplyLocale?: ReplyLocale;
   }): Promise<{ output: string } & BiAgentOutput> {
     const ctx = await this.prepareAgentOrGreeting({
       ...input,
       dataAccess: input.dataAccess ?? { kind: 'all' },
+      trivialSocial: input.trivialSocial,
+      trivialShortTone: input.trivialShortTone,
+      trivialReplyLocale: input.trivialReplyLocale,
     });
     if (ctx.kind === 'greeting') {
       const gr = ctx.out;
@@ -291,11 +454,17 @@ export class BiAgentService {
     chatId: string;
     dataAccess?: DataAccess;
     responseMode?: 'quick' | 'pro';
+    trivialSocial: boolean;
+    trivialShortTone?: TrivialShortTone;
+    trivialReplyLocale?: ReplyLocale;
   }): AsyncGenerator<BiStreamEvent> {
     const responseMode = this.normalizeResponseMode(input.responseMode);
     const ctx = await this.prepareAgentOrGreeting({
       ...input,
       dataAccess: input.dataAccess ?? { kind: 'all' },
+      trivialSocial: input.trivialSocial,
+      trivialShortTone: input.trivialShortTone,
+      trivialReplyLocale: input.trivialReplyLocale,
     });
     if (ctx.kind === 'greeting') {
       yield { t: 'status', m: 'Génération de la réponse d’accueil…' };

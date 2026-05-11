@@ -1,5 +1,6 @@
 import {
   Body,
+  BadRequestException,
   Controller,
   HttpException,
   Logger,
@@ -15,6 +16,15 @@ import {
 } from '../../common/constants/bi-webhook';
 import { WebhookAuthGuard } from '../../common/guards/webhook-auth.guard';
 import type { DataAccess } from '../../common/types/data-access';
+import {
+  isLikelyUserPromptInjection,
+  USER_MESSAGE_BLOCKED,
+} from '../bi/lib/prompt-safety';
+import type {
+  ReplyLocale,
+  TrivialShortTone,
+} from '../bi/lib/message-intent-classifier';
+import { matchStandaloneThanksMessage } from '../bi/lib/standalone-thanks-message';
 import { BiAgentService } from '../bi/services/bi-agent.service';
 import { ConversationAttachmentsService } from '../iam/conversation-attachments.service';
 import { WebhookBodyDto } from './dto/webhook-body.dto';
@@ -42,6 +52,47 @@ export class WebhookController {
     private readonly biAgent: BiAgentService,
     private readonly attachments: ConversationAttachmentsService,
   ) {}
+
+  /**
+   * Agent classifieur (LLM) sur le texte brut : trivial → pas de lecture PJ.
+   * Sinon enrichissement avec extraits des pièces jointes si demandé.
+   */
+  private async prepareMessageForAgent(
+    req: Request,
+    body: WebhookBodyDto,
+  ): Promise<{
+    message: string;
+    statusLine: string | null;
+    trivialSocial: boolean;
+    trivialShortTone?: TrivialShortTone;
+    trivialReplyLocale?: ReplyLocale;
+  }> {
+    if (isLikelyUserPromptInjection(body.message)) {
+      throw new BadRequestException(USER_MESSAGE_BLOCKED);
+    }
+    const thanksLocale = matchStandaloneThanksMessage(body.message);
+    if (thanksLocale !== null) {
+      return {
+        message: body.message.trim(),
+        statusLine: null,
+        trivialSocial: true,
+        trivialShortTone: 'thanks',
+        trivialReplyLocale: thanksLocale,
+      };
+    }
+    const intent = await this.biAgent.classifyUserMessageIntent(body.message);
+    if (intent.trivial) {
+      return {
+        message: body.message.trim(),
+        statusLine: null,
+        trivialSocial: true,
+        trivialShortTone: intent.shortTone,
+        trivialReplyLocale: intent.replyLocale,
+      };
+    }
+    const enriched = await this.enrichMessageWithAttachments(req, body);
+    return { ...enriched, trivialSocial: false };
+  }
 
   private async enrichMessageWithAttachments(
     req: Request,
@@ -88,12 +139,15 @@ ${context}`,
   @Post(N8N_WEBHOOK_PATH_SEGMENT)
   async handle(@Body() body: WebhookBodyDto, @Req() req: Request) {
     const dataAccess = req.dataAccess as DataAccess;
-    const prep = await this.enrichMessageWithAttachments(req, body);
+    const prep = await this.prepareMessageForAgent(req, body);
     return this.biAgent.runChat({
       message: prep.message,
       chatId: body.chatId,
       dataAccess,
       responseMode: body.responseMode,
+      trivialSocial: prep.trivialSocial,
+      trivialShortTone: prep.trivialShortTone,
+      trivialReplyLocale: prep.trivialReplyLocale,
     });
   }
 
@@ -112,7 +166,7 @@ ${context}`,
     res.setHeader('X-Bi-Stream-Version', BI_STREAM_VERSION_HEADER);
     const dataAccess = req.dataAccess as DataAccess;
     try {
-      const prep = await this.enrichMessageWithAttachments(req, body);
+      const prep = await this.prepareMessageForAgent(req, body);
       if (prep.statusLine) {
         res.write(`${JSON.stringify({ t: 'status' as const, m: prep.statusLine })}\n`);
       }
@@ -121,6 +175,9 @@ ${context}`,
         chatId: body.chatId,
         dataAccess,
         responseMode: body.responseMode,
+        trivialSocial: prep.trivialSocial,
+        trivialShortTone: prep.trivialShortTone,
+        trivialReplyLocale: prep.trivialReplyLocale,
       })) {
         res.write(`${JSON.stringify(ev)}\n`);
       }
