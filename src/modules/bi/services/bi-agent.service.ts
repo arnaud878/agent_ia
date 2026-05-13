@@ -18,8 +18,12 @@ import { ChatAnthropic } from '@langchain/anthropic';
 import { createReactAgent } from '@langchain/langgraph/prebuilt';
 import { buildBiTools } from '../lib/bi-tools';
 import {
-  biAgentOutputSchema,
+  mergeAnalysisAndHtmlToBiOutput,
   type BiAgentOutput,
+  type BiAnalysisOutput,
+  type BiHtmlRenderOutput,
+  biAnalysisOutputSchema,
+  biHtmlRenderOutputSchema,
 } from '../schemas/bi-output.schema';
 import { buildTrivialShortReply } from '../lib/trivial-short-reply';
 import { extractFirstJsonObject } from '../lib/extract-json-object';
@@ -63,6 +67,12 @@ type RuntimeLlmSettings = {
   model: string;
   apiKey: string;
 };
+
+/** Repli phase 2 si withStructuredOutput échoue. */
+const HTML_RENDER_JSON_SUFFIX = `
+
+Réponse obligatoire : un seul objet JSON valide UTF-8, sans markdown ni texte autour.
+Clé unique : "html" (chaîne : fragment HTML, guillemets et retours lignes échappés en JSON).`;
 
 @Injectable()
 export class BiAgentService {
@@ -151,8 +161,8 @@ export class BiAgentService {
     return { provider, model, apiKey };
   }
 
-  /** Limite de sortie agent principal (réduit troncatures JSON / OUTPUT_PARSING_FAILURE). */
-  private agentMaxOutputTokens(): number {
+  /** Limite tokens phase 1 (agent outils + schéma analyse sans gros HTML). */
+  private agentMaxAnalysisOutputTokens(): number {
     const raw = this.config.get<string>('AGENT_MAX_OUTPUT_TOKENS');
     if (raw == null || String(raw).trim() === '') {
       return 8192;
@@ -164,8 +174,21 @@ export class BiAgentService {
     return Math.min(65536, n);
   }
 
-  private buildRuntimeModel(settings: RuntimeLlmSettings) {
-    const cap = this.agentMaxOutputTokens();
+  /** Limite tokens phase 2 — uniquement le champ html (souvent volumineux). */
+  private agentMaxHtmlRenderOutputTokens(): number {
+    const raw = this.config.get<string>('AGENT_HTML_RENDER_MAX_OUTPUT_TOKENS');
+    if (raw == null || String(raw).trim() === '') {
+      return 16384;
+    }
+    const n = parseInt(String(raw), 10);
+    if (!Number.isFinite(n) || n < 4096) {
+      return 16384;
+    }
+    return Math.min(65536, n);
+  }
+
+  private buildAnalysisModel(settings: RuntimeLlmSettings) {
+    const cap = this.agentMaxAnalysisOutputTokens();
     if (settings.provider === 'gpt') {
       return new ChatOpenAI({
         model: settings.model,
@@ -190,7 +213,138 @@ export class BiAgentService {
     });
   }
 
-  /** Modèle court, température 0, pour la classification d’intention (pas l’agent outils). */
+  private buildHtmlRenderModel(settings: RuntimeLlmSettings) {
+    const cap = this.agentMaxHtmlRenderOutputTokens();
+    if (settings.provider === 'gpt') {
+      return new ChatOpenAI({
+        model: settings.model,
+        temperature: 0.12,
+        maxTokens: cap,
+        apiKey: settings.apiKey,
+      });
+    }
+    if (settings.provider === 'claude') {
+      return new ChatAnthropic({
+        model: settings.model,
+        temperature: 0.12,
+        maxTokens: cap,
+        apiKey: settings.apiKey,
+      });
+    }
+    return new ChatGoogleGenerativeAI({
+      model: settings.model,
+      temperature: 0.12,
+      apiKey: settings.apiKey,
+      maxOutputTokens: cap,
+    });
+  }
+
+  /**
+   * Phase 2 : HTML seul à partir de l’analyse (sans outils).
+   */
+  private async runHtmlRenderPhase(
+    analysis: BiAnalysisOutput,
+    settings: RuntimeLlmSettings,
+    responseMode: BiResponseMode,
+    replyLocale: ReplyLocale,
+  ): Promise<BiHtmlRenderOutput> {
+    const model = this.buildHtmlRenderModel(settings);
+    const system = this.prompts.getHtmlRenderPrompt();
+    const payload = {
+      responseMode,
+      replyLocale,
+      analysis: {
+        resultatSQL: analysis.resultatSQL,
+        formuleKPI: analysis.formuleKPI,
+        dataKPI: analysis.dataKPI,
+        requeteSQL: analysis.requeteSQL,
+        analysisSummary: analysis.analysisSummary,
+      },
+    };
+    const human = `Données pour le rendu (ne pas modifier les chiffres ; respecter replyLocale pour tout texte utilisateur).\n\n${JSON.stringify(payload, null, 2)}`;
+    try {
+      const structured = model.withStructuredOutput(biHtmlRenderOutputSchema, {
+        name: 'html_render',
+      });
+      return await structured.invoke([
+        new SystemMessage(system),
+        new HumanMessage(human),
+      ]);
+    } catch (e) {
+      this.log.warn(`Phase 2 structuredOutput échec, repli JSON brut: ${e}`);
+      return this.invokeHtmlRendererPlainJson(model, system, human, analysis);
+    }
+  }
+
+  private async invokeHtmlRendererPlainJson(
+    model: ChatOpenAI | ChatAnthropic | ChatGoogleGenerativeAI,
+    system: string,
+    human: string,
+    analysis: BiAnalysisOutput,
+  ): Promise<BiHtmlRenderOutput> {
+    try {
+      const res = await model.invoke([
+        new SystemMessage(system + HTML_RENDER_JSON_SUFFIX),
+        new HumanMessage(human),
+      ]);
+      const content =
+        typeof res.content === 'string'
+          ? res.content
+          : JSON.stringify(res.content);
+      const obj = extractFirstJsonObject(content);
+      const parsed = biHtmlRenderOutputSchema.safeParse(obj);
+      if (parsed.success) {
+        return parsed.data;
+      }
+    } catch (e) {
+      this.log.warn(`invokeHtmlRendererPlainJson: ${e}`);
+    }
+    return { html: this.fallbackHtmlFromAnalysis(analysis) };
+  }
+
+  private fallbackHtmlFromAnalysis(a: BiAnalysisOutput): string {
+    const esc = (s: string) =>
+      s
+        .replace(/&/g, '&amp;')
+        .replace(/</g, '&lt;')
+        .replace(/>/g, '&gt;');
+    return `<div style="font-family:system-ui,sans-serif;max-width:42rem;padding:1rem;border-radius:8px;border:1px solid #444;color:#e5e7eb;background:#111827;line-height:1.5"><p style="margin:0 0 0.5rem 0;font-size:0.75rem;opacity:0.85">Rendu HTML simplifié (repli)</p><pre style="white-space:pre-wrap;margin:0;font-size:0.88rem">${esc(a.analysisSummary)}</pre></div>`;
+  }
+
+  /**
+   * Si LangGraph ne remplit pas structuredResponse (phase 1 — analyse).
+   */
+  private tryRecoverAnalysisFromMessages(
+    messages: BaseMessage[] | unknown[] | undefined,
+  ): BiAnalysisOutput | null {
+    if (!Array.isArray(messages) || messages.length === 0) {
+      return null;
+    }
+    for (let i = messages.length - 1; i >= 0; i--) {
+      const msg = messages[i];
+      if (!AIMessage.isInstance(msg)) {
+        continue;
+      }
+      const text = this.messageContentAsText(msg.content);
+      if (!text || text.length < 12) {
+        continue;
+      }
+      try {
+        const obj = extractFirstJsonObject(text);
+        const parsed = biAnalysisOutputSchema.safeParse(obj);
+        if (parsed.success) {
+          this.log.warn(
+            'Sortie structurée phase 1 récupérée depuis le contenu brut du modèle',
+          );
+          return parsed.data;
+        }
+      } catch {
+        /* message précédent */
+      }
+    }
+    return null;
+  }
+
   private buildIntentClassifierModel(settings: RuntimeLlmSettings) {
     /** Marge large : sortie structurée / JSON Gemini peut être tronquée si trop bas. */
     const cap = 1024;
@@ -328,6 +482,7 @@ export class BiAgentService {
         agent: ReturnType<typeof createReactAgent>;
         baseMessages: BaseMessage[];
         userText: string;
+        responseMode: BiResponseMode;
       }
   > {
     if (isLikelyUserPromptInjection(input.message)) {
@@ -370,7 +525,7 @@ export class BiAgentService {
     const responseMode = this.normalizeResponseMode(input.responseMode);
     const system = this.prompts.buildSystemMessage(bdd, formuleKpi, responseMode);
     const llmSettings = await this.resolveRuntimeLlmSettings();
-    const model = this.buildRuntimeModel(llmSettings);
+    const model = this.buildAnalysisModel(llmSettings);
     const tools = buildBiTools(
       this.schema,
       input.dataAccess,
@@ -380,7 +535,7 @@ export class BiAgentService {
       llm: model,
       tools: [...tools],
       prompt: system,
-      responseFormat: biAgentOutputSchema,
+      responseFormat: biAnalysisOutputSchema,
     });
     const userLoc = inferReplyLocaleFromText(input.message);
     const langHint =
@@ -400,6 +555,7 @@ export class BiAgentService {
       agent,
       baseMessages,
       userText: input.message,
+      responseMode,
     };
   }
 
@@ -430,19 +586,28 @@ export class BiAgentService {
     const res = (await ctx.agent.invoke(
       { messages: ctx.baseMessages },
       { recursionLimit: this.agentRecursionLimit() },
-    )) as { structuredResponse?: BiAgentOutput; messages?: unknown[] };
-    let sr = res.structuredResponse;
-    if (!sr) {
-      sr = this.tryRecoverBiOutputFromMessages(
-        res.messages as BaseMessage[] | undefined,
-      ) ?? undefined;
+    )) as { structuredResponse?: BiAnalysisOutput; messages?: unknown[] };
+    let ar = res.structuredResponse;
+    if (!ar) {
+      ar =
+        this.tryRecoverAnalysisFromMessages(
+          res.messages as BaseMessage[] | undefined,
+        ) ?? undefined;
     }
-    if (!sr) {
-      this.log.error('structuredResponse manquant, état: %j', {
+    if (!ar) {
+      this.log.error('structuredResponse phase 1 manquant, état: %j', {
         msgCount: (res as { messages?: unknown[] })?.messages?.length,
       });
       throw new InternalServerErrorException('Sortie structurée manquante');
     }
+    const llmSettings = await this.resolveRuntimeLlmSettings();
+    const htmlPart = await this.runHtmlRenderPhase(
+      ar,
+      llmSettings,
+      ctx.responseMode,
+      inferReplyLocaleFromText(input.message),
+    );
+    const sr = mergeAnalysisAndHtmlToBiOutput(ar, htmlPart);
     const rawSqlResult = this.extractLastRawSqlResult(res.messages);
     const out = {
       output: this.cleanHtml(sr.html),
@@ -495,7 +660,7 @@ export class BiAgentService {
     let lastIndex = inputCount;
     let lastState: {
       messages?: BaseMessage[];
-      structuredResponse?: BiAgentOutput;
+      structuredResponse?: BiAnalysisOutput;
     } | null = null;
     let sqlIntentCount = 0;
     for await (const state of stream) {
@@ -537,13 +702,14 @@ export class BiAgentService {
         lastIndex = msgs.length;
       }
     }
-    let sr = lastState?.structuredResponse;
-    if (!sr) {
-      sr = this.tryRecoverBiOutputFromMessages(lastState?.messages) ?? undefined;
+    let ar = lastState?.structuredResponse;
+    if (!ar) {
+      ar =
+        this.tryRecoverAnalysisFromMessages(lastState?.messages) ?? undefined;
     }
-    if (!sr) {
+    if (!ar) {
       this.log.error(
-        'structuredResponse manquant (stream), lastState: %j',
+        'structuredResponse phase 1 manquant (stream), lastState: %j',
         lastState,
       );
       yield { t: 'error', message: 'Sortie structurée manquante' };
@@ -553,9 +719,17 @@ export class BiAgentService {
       t: 'status',
       m:
         responseMode === 'quick'
-          ? 'Préparation de la réponse (mode rapide, sans graphique)…'
-          : 'Préparation et mise en forme de la réponse (texte, graphiques)…',
+          ? 'Mise en forme HTML (mode rapide)…'
+          : 'Mise en forme HTML (graphiques, tableau)…',
     };
+    const llmSettings = await this.resolveRuntimeLlmSettings();
+    const htmlPart = await this.runHtmlRenderPhase(
+      ar,
+      llmSettings,
+      ctx.responseMode,
+      inferReplyLocaleFromText(input.message),
+    );
+    const sr = mergeAnalysisAndHtmlToBiOutput(ar, htmlPart);
     const rawSqlResult = this.extractLastRawSqlResult(lastState?.messages);
     const out = {
       output: this.cleanHtml(sr.html),
@@ -606,41 +780,6 @@ export class BiAgentService {
       return parts.join('');
     }
     return '';
-  }
-
-  /**
-   * Si LangGraph ne remplit pas structuredResponse (ex. OUTPUT_PARSING_FAILURE),
-   * tente d’extraire le premier objet JSON valide depuis les derniers AIMessage.
-   */
-  private tryRecoverBiOutputFromMessages(
-    messages: BaseMessage[] | unknown[] | undefined,
-  ): BiAgentOutput | null {
-    if (!Array.isArray(messages) || messages.length === 0) {
-      return null;
-    }
-    for (let i = messages.length - 1; i >= 0; i--) {
-      const msg = messages[i];
-      if (!AIMessage.isInstance(msg)) {
-        continue;
-      }
-      const text = this.messageContentAsText(msg.content);
-      if (!text || text.length < 12) {
-        continue;
-      }
-      try {
-        const obj = extractFirstJsonObject(text);
-        const parsed = biAgentOutputSchema.safeParse(obj);
-        if (parsed.success) {
-          this.log.warn(
-            'Réponse structurée récupérée depuis le contenu brut du modèle (repli parsing LangGraph)',
-          );
-          return parsed.data;
-        }
-      } catch {
-        /* message précédent */
-      }
-    }
-    return null;
   }
 
   private toolMessageContentAsText(m: ToolMessage): string {

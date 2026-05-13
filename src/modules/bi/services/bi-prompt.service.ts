@@ -9,6 +9,7 @@ export class BiPromptService {
   private staticPrompt: string | null = null;
   private formuleKpi: string | null = null;
   private quickModePrompt: string | null = null;
+  private htmlRenderPrompt: string | null = null;
 
   private readPromptFile(filename: string): string {
     const candidates = [
@@ -39,6 +40,11 @@ export class BiPromptService {
   private getQuickModePrompt(): string {
     this.quickModePrompt ??= this.readPromptFile('mode-quick.txt');
     return this.quickModePrompt;
+  }
+
+  getHtmlRenderPrompt(): string {
+    this.htmlRenderPrompt ??= this.readPromptFile('html-render.txt');
+    return this.htmlRenderPrompt;
   }
 
   buildSystemMessage(
