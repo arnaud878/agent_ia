@@ -1,60 +1,39 @@
-import { readFileSync, existsSync } from 'node:fs';
-import { join } from 'node:path';
 import { Injectable } from '@nestjs/common';
+import { BiAgentPromptStoreService } from './bi-agent-prompt-store.service';
 
 export type BiResponseMode = 'quick' | 'pro';
 
 @Injectable()
 export class BiPromptService {
-  private staticPrompt: string | null = null;
-  private formuleKpi: string | null = null;
-  private quickModePrompt: string | null = null;
-  private htmlRenderPrompt: string | null = null;
+  constructor(private readonly promptStore: BiAgentPromptStoreService) {}
 
-  private readPromptFile(filename: string): string {
-    const candidates = [
-      join(__dirname, '..', 'prompts', filename),
-      join(process.cwd(), 'dist', 'modules', 'bi', 'prompts', filename),
-      join(process.cwd(), 'src', 'modules', 'bi', 'prompts', filename),
-    ];
-    for (const p of candidates) {
-      if (existsSync(p)) {
-        return readFileSync(p, 'utf-8');
-      }
-    }
-    throw new Error(
-      `Fichier prompt introuvable: ${filename} (candidats: ${candidates.join(', ')})`,
-    );
+  getStaticPrompt(): Promise<string> {
+    return this.promptStore.resolvePromptBody('static');
   }
 
-  getStaticPrompt(): string {
-    this.staticPrompt ??= this.readPromptFile('static.txt');
-    return this.staticPrompt;
+  getFormuleKpiTemplate(): Promise<string> {
+    return this.promptStore.resolvePromptBody('formule-kpi');
   }
 
-  getFormuleKpiTemplate(): string {
-    this.formuleKpi ??= this.readPromptFile('formule-kpi.txt');
-    return this.formuleKpi;
+  private getQuickModePrompt(): Promise<string> {
+    return this.promptStore.resolvePromptBody('mode-quick');
   }
 
-  private getQuickModePrompt(): string {
-    this.quickModePrompt ??= this.readPromptFile('mode-quick.txt');
-    return this.quickModePrompt;
+  getHtmlRenderPrompt(): Promise<string> {
+    return this.promptStore.resolvePromptBody('html-render');
   }
 
-  getHtmlRenderPrompt(): string {
-    this.htmlRenderPrompt ??= this.readPromptFile('html-render.txt');
-    return this.htmlRenderPrompt;
-  }
-
-  buildSystemMessage(
+  async buildSystemMessage(
     bdd: unknown,
     formuleKpi: string,
     mode: BiResponseMode = 'pro',
-  ): string {
+  ): Promise<string> {
+    const staticText = await this.getStaticPrompt();
     const modeBlock =
-      mode === 'quick' ? `${this.getQuickModePrompt().trimEnd()}\n\n` : '';
-    return this.getStaticPrompt()
+      mode === 'quick'
+        ? `${(await this.getQuickModePrompt()).trimEnd()}\n\n`
+        : '';
+    return staticText
       .replaceAll('__RESPONSE_MODE_BLOCK__', modeBlock)
       .replace(
         '__SCHEMA_BLOCK__',

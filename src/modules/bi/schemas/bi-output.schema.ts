@@ -43,7 +43,30 @@ export const biReportSectionsSchema = z.object({
     .optional()
     .describe('Une ligne par enregistrement ; même nombre de cellules que tableHeaders'),
   chart: biChartSpecSchema.nullish(),
-  recommendations: z.array(z.string()),
+  operationalActions: z
+    .array(z.string())
+    .default([])
+    .describe(
+      'Actions opérationnelles (exploitation, maintenance, qualité des données…) — adaptées à la question ; [] si non pertinent.',
+    ),
+  commercialActions: z
+    .array(z.string())
+    .default([])
+    .describe(
+      'Actions commerciales (vente, client, contrat, offre…) — adaptées à la question ; [] si non pertinent.',
+    ),
+  strategicSummary: z
+    .string()
+    .optional()
+    .describe(
+      'Résumé stratégique court (5–8 lignes max) : criticité, écarts vs objectifs, priorités — aligné sur la question.',
+    ),
+  recommendations: z
+    .array(z.string())
+    .default([])
+    .describe(
+      'Recommandations transverses complémentaires (générales ou transverses) ; peut rester [] si tout est déjà couvert par les blocs ci-dessus.',
+    ),
   formulasNote: z
     .string()
     .optional()
@@ -61,7 +84,7 @@ export const biAnalysisOutputSchema = z.object({
   dataKPI: z.string().describe('Données associées aux KPI'),
   requeteSQL: z.string().describe('Dernière requête SQL pertinente'),
   reportSections: biReportSectionsSchema.describe(
-    'Contenu utilisateur pour la phase 2 : titres, insights, tableau, graphique, recommandations — sans HTML',
+    'Contenu utilisateur phase 2 : titres, insights, tableau, graphique, actions opérationnelles / commerciales, résumé stratégique, recommandations — sans HTML',
   ),
 });
 

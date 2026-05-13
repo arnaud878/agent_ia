@@ -48,7 +48,7 @@ Ainsi, l’**agent ne parle pas directement** au pool de la base BI : toute requ
 
 ## 4. Génération SQL et sécurité
 
-- **Côté prompt** (fichier `static.txt`) : l’agent est invité à n’écrire que des `SELECT` (éventuellement `WITH ... SELECT`), à préfixer par `public.`, à limiter le volume (`LIMIT 500`), et à éviter certains patterns dynamiques de dates (détails dans le prompt).
+- **Côté prompt** (texte du prompt principal en base, `bi_agent_prompts` / modèle dans `bi-prompt-install-defaults.ts`) : l’agent est invité à n’écrire que des `SELECT` (éventuellement `WITH ... SELECT`), à préfixer par `public.`, à limiter le volume (`LIMIT 500`), et à éviter certains patterns dynamiques de dates (détails dans le prompt).
 - **Côté code** (`ensureSelectReadOnly` dans `bi-tools.ts`) :
   - seules les requêtes commençant par `WITH` ou `SELECT` sont acceptées ;
   - des mots-clés d’écriture / DDL (`INSERT`, `UPDATE`, `DELETE`, `DROP`, etc.) provoquent un **rejet** ;
@@ -78,8 +78,8 @@ Si la sortie structurée est **absente**, le backend renvoie une erreur serveur 
 
 ## 6. Règles métier et formules (prompts)
 
-- **`static.txt`** : identité BI, règles solaire (puissance installée, irradiance, production « brute » en excluant notamment `puissance_active <= 0` quand c’est requis), interdiction d’inventer des entités, workflow analyse / requêtes, format HTML, rappel des champs structurés finaux.
-- **`formule-kpi.txt`** (injecté via `__KPI_BLOCK__`) : formules d’**irradiation par heure / jour**, d’**énergie** produite, de **PR (Performance Ratio)**, et agrégation **carburant** (volumes sur période).
+- **Prompts agent** : contenu en **base** (`public.bi_agent_prompts`). Les modèles initiaux sont définis dans le code (`bi-prompt-install-defaults.ts`) et recopiés en base au démarrage si `body` est vide ; l’admin peut les personnaliser (y compris le prompt principal « static », le rendu HTML phase 2, le mode rapide, les formules KPI).
+- **Formules KPI** (injectées via `__KPI_BLOCK__`) : même mécanisme — ligne `formule-kpi` en base ; formules d’**irradiation par heure / jour**, d’**énergie** produite, de **PR (Performance Ratio)**, et agrégation **carburant** (volumes sur période).
 
 Ces blocs complètent le **bloc de schéma** (`__SCHEMA_BLOCK__` : JSON BDD) dans le **message système** unique de l’agent.
 

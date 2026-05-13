@@ -249,7 +249,7 @@ export class BiAgentService {
     replyLocale: ReplyLocale,
   ): Promise<BiHtmlRenderOutput> {
     const model = this.buildHtmlRenderModel(settings);
-    const system = this.prompts.getHtmlRenderPrompt();
+    const system = await this.prompts.getHtmlRenderPrompt();
     const payload = {
       responseMode,
       replyLocale,
@@ -337,9 +337,31 @@ export class BiAgentService {
         `<pre style="white-space:pre-wrap;font-size:0.8rem;opacity:0.9;margin-bottom:1rem">${esc(JSON.stringify({ chart: rs.chart }, null, 2))}</pre>`,
       );
     }
-    if (rs.recommendations.length > 0) {
-      const lis = rs.recommendations.map((r) => `<li>${esc(r)}</li>`).join('');
-      parts.push(`<ul style="margin:0;padding-left:1.25rem">${lis}</ul>`);
+    const operational = rs.operationalActions ?? [];
+    if (operational.length > 0) {
+      const lis = operational.map((r) => `<li>${esc(r)}</li>`).join('');
+      parts.push(
+        `<h3 style="margin:0.75rem 0 0.35rem 0;font-size:0.95rem;color:#4e79a7">Actions opérationnelles</h3><ul style="margin:0;padding-left:1.25rem">${lis}</ul>`,
+      );
+    }
+    const commercial = rs.commercialActions ?? [];
+    if (commercial.length > 0) {
+      const lis = commercial.map((r) => `<li>${esc(r)}</li>`).join('');
+      parts.push(
+        `<h3 style="margin:0.75rem 0 0.35rem 0;font-size:0.95rem;color:#f28e2b">Actions commerciales</h3><ul style="margin:0;padding-left:1.25rem">${lis}</ul>`,
+      );
+    }
+    if (rs.strategicSummary?.trim()) {
+      parts.push(
+        `<h3 style="margin:0.75rem 0 0.35rem 0;font-size:0.95rem;color:#e15759">Résumé stratégique</h3><p style="margin:0;white-space:pre-wrap;font-size:0.9rem">${esc(rs.strategicSummary.trim())}</p>`,
+      );
+    }
+    const recs = rs.recommendations ?? [];
+    if (recs.length > 0) {
+      const lis = recs.map((r) => `<li>${esc(r)}</li>`).join('');
+      parts.push(
+        `<h3 style="margin:0.75rem 0 0.35rem 0;font-size:0.95rem;color:#5cb85c">Recommandations</h3><ul style="margin:0;padding-left:1.25rem">${lis}</ul>`,
+      );
     }
     if (rs.formulasNote) {
       parts.push(
@@ -560,9 +582,13 @@ export class BiAgentService {
         'Schéma métier vide pour les tables autorisées.',
       );
     }
-    const formuleKpi = this.prompts.getFormuleKpiTemplate();
+    const formuleKpi = await this.prompts.getFormuleKpiTemplate();
     const responseMode = this.normalizeResponseMode(input.responseMode);
-    const system = this.prompts.buildSystemMessage(bdd, formuleKpi, responseMode);
+    const system = await this.prompts.buildSystemMessage(
+      bdd,
+      formuleKpi,
+      responseMode,
+    );
     const llmSettings = await this.resolveRuntimeLlmSettings();
     const model = this.buildAnalysisModel(llmSettings);
     const tools = buildBiTools(

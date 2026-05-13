@@ -16,17 +16,22 @@ import { RolesGuard } from '../../common/guards/roles.guard';
 import { CreateRoleDto } from './dto/create-role.dto';
 import { SetBiConnectionDto } from './dto/set-bi-connection.dto';
 import { SetBiTablesDto } from './dto/set-bi-tables.dto';
+import { SetAgentPromptDto } from './dto/set-agent-prompt.dto';
 import { SetLlmSettingsDto } from './dto/set-llm-settings.dto';
 import { CreateUserDto } from './dto/create-user.dto';
 import { SetRoleTablesDto } from './dto/set-role-tables.dto';
 import { UpdateUserDto } from './dto/update-user.dto';
+import { BiAgentPromptStoreService } from '../bi/services/bi-agent-prompt-store.service';
 import { IamService, type AuthUserPayload } from './iam.service';
 
 @Controller('iam')
 @UseGuards(AuthGuard('jwt'), RolesGuard)
 @Roles('admin')
 export class RbacController {
-  constructor(private readonly iam: IamService) {}
+  constructor(
+    private readonly iam: IamService,
+    private readonly agentPrompts: BiAgentPromptStoreService,
+  ) {}
 
   @Get('bi-tables')
   biTableNames() {
@@ -60,6 +65,25 @@ export class RbacController {
       model: dto.model,
       apiKey: dto.apiKey,
     });
+  }
+
+  @Get('agent-prompts')
+  listAgentPrompts() {
+    return this.agentPrompts.listPromptsWithSource();
+  }
+
+  @Get('agent-prompts/:id')
+  getAgentPrompt(@Param('id') id: string) {
+    return this.agentPrompts.getPromptDetail(id);
+  }
+
+  @Put('agent-prompts/:id')
+  async setAgentPrompt(
+    @Param('id') id: string,
+    @Body() dto: SetAgentPromptDto,
+  ) {
+    await this.agentPrompts.setPromptBody(id, dto.body ?? null);
+    return { ok: true as const };
   }
 
   @Get('roles')

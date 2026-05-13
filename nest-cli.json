@@ -4,12 +4,7 @@
   "sourceRoot": "src",
   "compilerOptions": {
     "deleteOutDir": true,
-    "assets": [
-      {
-        "include": "**/prompts/*.txt",
-        "outDir": "dist"
-      }
-    ],
-    "watchAssets": true
+    "assets": [],
+    "watchAssets": false
   }
 }

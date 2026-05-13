@@ -169,6 +169,8 @@ ${context}`,
       const prep = await this.prepareMessageForAgent(req, body);
       if (prep.statusLine) {
         res.write(`${JSON.stringify({ t: 'status' as const, m: prep.statusLine })}\n`);
+        const flushable = res as Response & { flush?: () => void };
+        flushable.flush?.();
       }
       for await (const ev of this.biAgent.streamChat({
         message: prep.message,
@@ -180,6 +182,8 @@ ${context}`,
         trivialReplyLocale: prep.trivialReplyLocale,
       })) {
         res.write(`${JSON.stringify(ev)}\n`);
+        const flushable = res as Response & { flush?: () => void };
+        flushable.flush?.();
       }
       res.end();
     } catch (e) {

@@ -23,6 +23,7 @@
     "db:migrate:conversations": "node scripts/db-exec.cjs migrations/20260602120000_bi_conversations.sql",
     "db:migrate:conversations-ui": "node scripts/db-exec.cjs migrations/20260624140000_bi_conversation_ui.sql",
     "db:migrate:conversations-all": "npm run db:migrate:conversations && npm run db:migrate:conversations-ui",
+    "db:migrate:agent-prompts": "node scripts/db-exec.cjs migrations/20260513120000_bi_agent_prompts.sql",
     "db:migrate:app": "npm run db:migrate:auth && npm run db:migrate:chat && npm run db:migrate:conversations-all"
   },
   "dependencies": {
