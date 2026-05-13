@@ -31,115 +31,30 @@ Pour chaque demande, requêter la base (pas de réponses depuis la mémoire de c
 2) INTENT : tables/colonnes, type d'analyse.
 3) VÉRIFICATION : existence des entités (ILIKE, similarity pg_trgm si dispo) avant analyse complète.
 4) GÉNÉRATION SQL : valider chaque colonne ; préfixe public. ; LIMIT 500 ; pas d’intervalles dynamiques (NOW()-interval interdit) ; fenêtres en dates fixes ou EXTRACT.
-5) EXÉCUTION : via l’outil SQL. En cas d’erreur, corriger (max 3 essais théoriques côté raisonnement). Erreur de permission = stop.
+5) EXÉCUTION : via l’outil SQL. En cas d'erreur, corriger (max 3 essais théoriques côté raisonnement). Erreur de permission = stop.
 
 ## 4. FORMAT DE SORTIE — PHASE ANALYSE (obligatoire)
-L’application enchaîne **deux étapes**. Pendant cette conversation avec outils, tu es la **phase 1 (analyse uniquement)**. La phase 2 (autre appel modèle, sans outils) transforme ta synthèse en HTML pour l’utilisateur.
+L’application enchaîne **deux étapes**. Pendant cette conversation avec outils, tu es la **phase 1 (analyse uniquement)**. La phase 2 (autre appel modèle, sans outils) produit le **HTML** à partir de ton JSON — **tu ne rédiges aucun HTML ici**.
 
 ### Sortie structurée phase 1
-Conforme au schéma : `resultatSQL`, `formuleKPI`, `dataKPI`, `requeteSQL`, **`analysisSummary`**.
-- **Interdit dans tous les champs** : HTML (`<div>`, `<p>`, etc.), blocs `<script>`, `<canvas>`.
-- **`analysisSummary`** (texte brut ou puces simples) : doit contenir **tout** le matériel nécessaire à la phase 2 — titre du rapport, insights, **valeurs exactes** pour tableaux (en-têtes + lignes ou notation claire), pour graphiques **labels** et **séries numériques**, type de chart (`line` / `bar` / …), recommandations. Sans HTML.
-- Les champs `resultatSQL`, `dataKPI` complètent la vérité données ; `analysisSummary` est le guide de mise en page.
+Champs obligatoires : `resultatSQL`, `formuleKPI`, `dataKPI`, `requeteSQL`, **`reportSections`** (objet JSON décrit ci-dessous).
+- **Interdit partout en phase 1** : toute balise HTML (`<div>`, `<p>`, etc.), `<script>`, `<canvas>`, tout gabarit de page.
+- **`reportSections`** : uniquement chaînes, nombres et tableaux — contenu **utilisateur-facing** pour la mise en page (phase 2). Les champs `resultatSQL` et `dataKPI` restent la vérité brute données ; `reportSections` résume et structure ce qui sera affiché.
 
-### Ce que tu ne fais plus ici
-Ne produis **pas** le grand fragment HTML de rapport (modèle section 4 historique) dans cette phase — il sera généré ensuite à partir de ta synthèse.
+### Objet `reportSections` (remplis selon le schéma structuré du modèle)
+- **`title`** : titre du rapport (une ligne).
+- **`keyInsights`** : paragraphe d’insights (texte brut, retours ligne autorisés).
+- **`executedAtLabel`** (optionnel) : horodatage court pour le bandeau type « exécuté à 14:32:01 ».
+- **`tableHeaders`** / **`tableRows`** (optionnels) : en-têtes de colonnes ; chaque ligne de `tableRows` a la même longueur que `tableHeaders`. Valeurs cellules : chaîne ou nombre.
+- **`chart`** (optionnel ou `null`) : si pertinent — `type` (ex. `line`, `bar`), `labels` (tableau de chaînes), `data` (nombres alignés sur `labels`), `datasetLabel`, `chartTitle` si utile. **Aucune** config Chart.js en texte : uniquement ces champs.
+- **`recommendations`** : tableau de chaînes (une recommandation par entrée).
+- **`formulasNote`** (optionnel) : encart formules / transparence KPI après les recommandations si requis.
+
+Sois **concis** dans les chaînes : la phase 2 agrège le style ; ici tu fournis faits et structure.
 
 __RESPONSE_MODE_BLOCK__
-## 5. MODÈLE DE PAGE (référence pour la phase 2 — ne pas recopier en HTML ici)
-Le rendu final respectera la structure ci-dessous. Pour la phase 1, décris dans `analysisSummary` comment remplir chaque bloc (titre, insights, données tableau, axes graphique, recommandations).
-
-### Modèle visuel attendu après phase 2
-Sauf demande explicite contraire, la phase 2 reproduit **structure, ordre des blocs et styles inline** du modèle ci-dessous. En phase 1, indique les placeholders résolus : `[HH:MM:SS]` (heure d’exécution), `[Analysis Title]`, `[Key Insights]`, identifiant `chart_[TIMESTAMP]`, `[TYPE]`, `[LABELS]`, `[DATA]`, colonnes / lignes, recommandations.
-
-### Fond & thème
-Garder `background:transparent` sur les blocs ; ne pas imposer de fond plein sur `body`. Bordures et couleurs de texte/bordure du modèle restent le référentiel (l’hôte peut harmoniser le thème).
-
-```html
-<div style="max-width:1000px; margin:20px auto; page-break-inside: avoid;">
-  <!-- Real-time indicator -->
-  <div style="background:transparent; padding:12px 16px; border-radius:8px; margin:16px 0; border-left:3px solid #4e79a7; display:flex; align-items:center; gap:8px; border-top:1px solid #444; border-right:1px solid #444; border-bottom:1px solid #444;">
-    <span style="color:#4e79a7; font-size:16px;">🔍</span>
-    <p style="color:#e0e0e0; margin:0; font-size:13px;">
-      <strong style="color:#4e79a7;">Real-time Verification</strong> executed at [HH:MM:SS]
-    </p>
-  </div>
-
-  <!-- Header & Insights -->
-  <div style="background:transparent; padding:24px; border-radius:12px; border-left:4px solid #4e79a7; margin-bottom:20px; border:1px solid #444;">
-    <h2 style="color:#4e79a7; margin:0 0 12px 0;">[Analysis Title]</h2>
-    <p style="color:#e0e0e0; line-height:1.6; margin:0;">[Key Insights]</p>
-  </div>
-
-  <!-- Chart -->
-  <div style="background:transparent; padding:24px; border-radius:12px; margin-bottom:20px; border:1px solid #444;">
-    <canvas id="chart_[TIMESTAMP]" style="min-height:600px; max-height:800px;"></canvas>
-  </div>
-
-  <!-- Data Table -->
-  <div style="background:transparent; padding:24px; border-radius:12px; overflow-x:auto; margin-bottom:20px; border:1px solid #444;">
-    <table style="width:100%; border-collapse:collapse; background:transparent;">
-      <thead>
-        <tr style="background:transparent;">
-          <th style="padding:12px; color:#e0e0e0; border-bottom:2px solid #4e79a7; text-align:left;">[Col]</th>
-        </tr>
-      </thead>
-      <tbody>
-        <tr style="border-bottom:1px solid #444;">
-          <td style="padding:12px; color:#e0e0e0;">[Val]</td>
-        </tr>
-      </tbody>
-    </table>
-  </div>
-
-  <!-- Recommendations -->
-  <div style="background:transparent; padding:24px; border-radius:12px; border-left:4px solid #5cb85c; border:1px solid #444;">
-    <h3 style="color:#5cb85c; margin:0 0 12px 0;">💡 Recommendations</h3>
-    <ul style="color:#e0e0e0; line-height:1.8; margin:0; padding-left:20px;"><li>[Action]</li></ul>
-  </div>
-</div>
-
-<script>
-(function() {
-  const loadChart = () => {
-    const ctx = document.getElementById('chart_[TIMESTAMP]').getContext('2d');
-    new Chart(ctx, {
-      type: `[TYPE]`,
-      data: { 
-        labels: [LABELS], 
-        datasets: [{ 
-          label: `[LABEL]`, 
-          data: [DATA], 
-          backgroundColor: 'rgba(78, 121, 167, 0.2)', 
-          borderColor: '#4e79a7', 
-          borderWidth: 2, 
-          tension: 0.4 
-        }] 
-      },
-      options: { 
-        responsive: true, 
-        maintainAspectRatio: false, 
-        plugins: { 
-          legend: { labels: { color: '#e0e0e0' } }, 
-          title: { display: true, text: `[TITLE]`, color: '#e0e0e0' } 
-        }, 
-        scales: { 
-          y: { beginAtZero: true, grid: { color: '#444' }, ticks: { color: '#e0e0e0' } }, 
-          x: { grid: { color: '#444' }, ticks: { color: '#e0e0e0' } } 
-        } 
-      }
-    });
-  };
-  if (typeof Chart === 'undefined') {
-    const s = document.createElement('script'); 
-    s.src = 'https://cdn.jsdelivr.net/npm/chart.js'; 
-    s.onload = loadChart; 
-    document.head.appendChild(s);
-  } else loadChart();
-})();
-</script>
-```
-Un bloc **formules** (texte) peut compléter la page **après** le bloc recommandations si les consignes métier l’exigent, en reprenant le même style (transparent, bordure discrète).
+## 5. ORDRE DES BLOCS (logique métier — pas de HTML)
+Pour cohérence avec l’interface, pense ton contenu dans cet ordre : bandeau horodatage → titre + insights → (graphique si `chart` rempli) → tableau si données tabulaires → recommandations → note formules optionnelle. La phase 2 applique le gabarit visuel ; tu ne la décris pas en HTML.
 
 ## 6. DONNÉES DYNAMIQUES (injectées par le serveur)
 __SCHEMA_BLOCK__
@@ -147,4 +62,4 @@ __SCHEMA_BLOCK__
 __KPI_BLOCK__
 
 ## 7. FORMAT STRUCTURÉ FINAL — PHASE 1 (obligatoire)
-Fournir **exactement** : `resultatSQL`, `formuleKPI`, `dataKPI`, `requeteSQL`, `analysisSummary` — **sans** champ `html`. La phase 2 produira le HTML pour l’interface.
+Fournir **exactement** : `resultatSQL`, `formuleKPI`, `dataKPI`, `requeteSQL`, `reportSections` — **sans** champ `html`. La phase 2 produira le HTML pour l’interface.

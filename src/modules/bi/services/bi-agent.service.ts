@@ -258,7 +258,7 @@ export class BiAgentService {
         formuleKPI: analysis.formuleKPI,
         dataKPI: analysis.dataKPI,
         requeteSQL: analysis.requeteSQL,
-        analysisSummary: analysis.analysisSummary,
+        reportSections: analysis.reportSections,
       },
     };
     const human = `Données pour le rendu (ne pas modifier les chiffres ; respecter replyLocale pour tout texte utilisateur).\n\n${JSON.stringify(payload, null, 2)}`;
@@ -308,7 +308,46 @@ export class BiAgentService {
         .replace(/&/g, '&amp;')
         .replace(/</g, '&lt;')
         .replace(/>/g, '&gt;');
-    return `<div style="font-family:system-ui,sans-serif;max-width:42rem;padding:1rem;border-radius:8px;border:1px solid #444;color:#e5e7eb;background:#111827;line-height:1.5"><p style="margin:0 0 0.5rem 0;font-size:0.75rem;opacity:0.85">Rendu HTML simplifié (repli)</p><pre style="white-space:pre-wrap;margin:0;font-size:0.88rem">${esc(a.analysisSummary)}</pre></div>`;
+    const rs = a.reportSections;
+    const parts: string[] = [
+      `<div style="font-family:system-ui,sans-serif;max-width:42rem;padding:1rem;border-radius:8px;border:1px solid #444;color:#e5e7eb;background:#111827;line-height:1.5">`,
+      `<p style="margin:0 0 0.5rem 0;font-size:0.75rem;opacity:0.85">Rendu HTML simplifié (repli)</p>`,
+      `<h2 style="margin:0 0 0.5rem 0;font-size:1.1rem">${esc(rs.title)}</h2>`,
+      `<p style="margin:0 0 1rem 0;white-space:pre-wrap">${esc(rs.keyInsights)}</p>`,
+    ];
+    if (rs.executedAtLabel) {
+      parts.push(
+        `<p style="margin:0 0 0.75rem 0;font-size:0.85rem;opacity:0.9">${esc(rs.executedAtLabel)}</p>`,
+      );
+    }
+    if (rs.tableHeaders?.length && rs.tableRows?.length) {
+      const th = rs.tableHeaders.map((h) => `<th style="text-align:left;padding:4px 8px;border-bottom:1px solid #555">${esc(String(h))}</th>`).join('');
+      const trs = rs.tableRows
+        .map((row) => {
+          const tds = row
+            .map((cell) => `<td style="padding:4px 8px;border-bottom:1px solid #333">${esc(String(cell))}</td>`)
+            .join('');
+          return `<tr>${tds}</tr>`;
+        })
+        .join('');
+      parts.push(`<table style="width:100%;border-collapse:collapse;margin-bottom:1rem"><thead><tr>${th}</tr></thead><tbody>${trs}</tbody></table>`);
+    }
+    if (rs.chart && rs.chart.labels.length > 0) {
+      parts.push(
+        `<pre style="white-space:pre-wrap;font-size:0.8rem;opacity:0.9;margin-bottom:1rem">${esc(JSON.stringify({ chart: rs.chart }, null, 2))}</pre>`,
+      );
+    }
+    if (rs.recommendations.length > 0) {
+      const lis = rs.recommendations.map((r) => `<li>${esc(r)}</li>`).join('');
+      parts.push(`<ul style="margin:0;padding-left:1.25rem">${lis}</ul>`);
+    }
+    if (rs.formulasNote) {
+      parts.push(
+        `<p style="margin-top:1rem;font-size:0.88rem;white-space:pre-wrap;opacity:0.92">${esc(rs.formulasNote)}</p>`,
+      );
+    }
+    parts.push(`</div>`);
+    return parts.join('');
   }
 
   /**

@@ -55,7 +55,7 @@ export class BiPromptService {
     const modeBlock =
       mode === 'quick' ? `${this.getQuickModePrompt().trimEnd()}\n\n` : '';
     return this.getStaticPrompt()
-      .replace('__RESPONSE_MODE_BLOCK__', modeBlock)
+      .replaceAll('__RESPONSE_MODE_BLOCK__', modeBlock)
       .replace(
         '__SCHEMA_BLOCK__',
         `**schemaDataBasePostgreSQL:**\n${JSON.stringify(bdd)}`,
