@@ -43,6 +43,11 @@ export class RbacController {
     return this.iam.setBiTableNames(dto.tableNames);
   }
 
+  @Get('bi-tables/available')
+  getAvailableBiTables() {
+    return this.iam.getAvailableBiTables();
+  }
+
   @Get('bi-connection')
   getBiConnection() {
     return this.iam.getBiConnection();

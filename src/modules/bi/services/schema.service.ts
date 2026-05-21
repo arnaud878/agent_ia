@@ -168,6 +168,32 @@ export class SchemaService implements OnModuleInit, OnModuleDestroy {
   }
 
   /**
+   * Retourne tous les noms de tables (BASE TABLE) de la base BI connectée.
+   * Compatible PostgreSQL et MySQL.
+   */
+  async getAvailableTableNames(): Promise<string[]> {
+    const { dbType } = await this.getBiConnectionSettings();
+    let query: string;
+    if (dbType === 'mysql') {
+      query = `SELECT TABLE_NAME AS table_name
+               FROM information_schema.TABLES
+               WHERE TABLE_SCHEMA = DATABASE()
+                 AND TABLE_TYPE = 'BASE TABLE'
+               ORDER BY TABLE_NAME`;
+    } else {
+      query = `SELECT table_name
+               FROM information_schema.tables
+               WHERE table_schema = 'public'
+                 AND table_type = 'BASE TABLE'
+               ORDER BY table_name`;
+    }
+    const res = await this.biAdapter.query<{ table_name: string }>(query);
+    return res.rows
+      .map((r) => String(r.table_name).trim())
+      .filter((t) => /^[a-zA-Z_][a-zA-Z0-9_]*$/.test(t));
+  }
+
+  /**
    * Base analytique (requêtes de l'agent BI).
    */
   async executeBiQuery(

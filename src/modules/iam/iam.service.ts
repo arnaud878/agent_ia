@@ -328,6 +328,17 @@ export class IamService implements OnModuleInit {
     }
   }
 
+  async getAvailableBiTables(): Promise<{ tables: string[] }> {
+    try {
+      const tables = await this.schema.getAvailableTableNames();
+      return { tables };
+    } catch (e) {
+      throw new BadRequestException(
+        `Impossible de récupérer les tables : ${(e as Error).message}`,
+      );
+    }
+  }
+
   async getBiConnection(): Promise<{
     connectionString: string;
     dbType: 'postgresql' | 'mysql';
