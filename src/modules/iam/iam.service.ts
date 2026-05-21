@@ -345,14 +345,21 @@ export class IamService implements OnModuleInit {
     }
   }
 
-  async getBiConnection(): Promise<{ connectionString: string }> {
-    const s = await this.schema.getBiConnectionString();
-    return { connectionString: s ?? '' };
+  async getBiConnection(): Promise<{
+    connectionString: string;
+    dbType: 'postgresql' | 'mysql';
+  }> {
+    const { connectionString, dbType } =
+      await this.schema.getBiConnectionSettings();
+    return { connectionString: connectionString ?? '', dbType };
   }
 
-  async setBiConnection(connectionString: string): Promise<{ ok: true }> {
+  async setBiConnection(
+    connectionString: string,
+    dbType: 'postgresql' | 'mysql' = 'postgresql',
+  ): Promise<{ ok: true }> {
     try {
-      await this.schema.setBiConnectionString(connectionString);
+      await this.schema.setBiConnection(connectionString, dbType);
       return { ok: true as const };
     } catch (e) {
       throw new BadRequestException((e as Error).message);

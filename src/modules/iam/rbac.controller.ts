@@ -50,7 +50,10 @@ export class RbacController {
 
   @Put('bi-connection')
   setBiConnection(@Body() dto: SetBiConnectionDto) {
-    return this.iam.setBiConnection(dto.connectionString);
+    return this.iam.setBiConnection(
+      dto.connectionString,
+      dto.dbType ?? 'postgresql',
+    );
   }
 
   @Get('llm-settings')
