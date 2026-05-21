@@ -7,6 +7,8 @@ import {
 } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import * as bcrypt from 'bcrypt';
+import { sql } from 'kysely';
+import { AppDbService } from '../../common/db/app-db.service';
 import { BiDataTablesService } from '../../common/bi-tables/bi-data-tables.service';
 import type { DataAccess } from '../../common/types/data-access';
 import { SchemaService } from '../bi/services/schema.service';
@@ -26,6 +28,7 @@ export class IamService implements OnModuleInit {
 
   constructor(
     private readonly config: ConfigService,
+    private readonly appDb: AppDbService,
     private readonly schema: SchemaService,
     private readonly biTables: BiDataTablesService,
   ) {}
@@ -37,13 +40,9 @@ export class IamService implements OnModuleInit {
   private async bootstrapAdminIfConfigured() {
     const email = this.config.get<string>('BOOTSTRAP_ADMIN_EMAIL')?.trim();
     const pass = this.config.get<string>('BOOTSTRAP_ADMIN_PASSWORD');
-    if (!email || !pass) {
-      return;
-    }
+    if (!email || !pass) return;
     const existing = await this.findUserByEmail(email);
-    if (existing) {
-      return;
-    }
+    if (existing) return;
     const roleId = await this.findRoleIdBySlug('admin');
     if (!roleId) {
       this.log.warn(
@@ -56,57 +55,44 @@ export class IamService implements OnModuleInit {
   }
 
   async findByIdForAuth(id: string): Promise<AuthUserPayload | null> {
-    const rows = await this.schema.executeAppQuery(
-      `SELECT u.id, u.email, u.active, r.slug AS "roleSlug"
-       FROM public.app_users u
-       JOIN public.app_roles r ON r.id = u.role_id
-       WHERE u.id = $1`,
-      [id],
-    );
-    const r = rows.rows[0] as
-      | { id: string; email: string; active: boolean; roleSlug: string }
-      | undefined;
-    if (!r) {
-      return null;
-    }
+    const row = await this.appDb.db
+      .selectFrom('app_users as u')
+      .innerJoin('app_roles as r', 'r.id', 'u.role_id')
+      .select(['u.id', 'u.email', 'u.active', 'r.slug as roleSlug'])
+      .where('u.id', '=', id)
+      .executeTakeFirst();
+
+    if (!row) return null;
     return {
-      id: r.id,
-      email: r.email,
-      roleSlug: r.roleSlug,
-      active: r.active,
+      id: String(row.id),
+      email: String(row.email),
+      roleSlug: String(row.roleSlug),
+      active: Boolean(row.active),
     };
   }
 
   async getDataAccessForUserId(userId: string): Promise<DataAccess | null> {
-    const rows = await this.schema.executeAppQuery(
-      `SELECT u.active, r.access_all_tables AS "accessAll"
-       FROM public.app_users u
-       JOIN public.app_roles r ON r.id = u.role_id
-       WHERE u.id = $1`,
-      [userId],
-    );
-    const base = rows.rows[0] as
-      | { active: boolean; accessAll: boolean }
-      | undefined;
-    if (!base || !base.active) {
-      return null;
-    }
-    if (base.accessAll) {
-      return { kind: 'all' };
-    }
-    const t = await this.schema.executeAppQuery(
-      `SELECT art.table_name AS "tableName"
-       FROM public.app_users u
-       JOIN public.app_role_tables art ON art.role_id = u.role_id
-       WHERE u.id = $1`,
-      [userId],
-    );
-    const names = (t.rows as { tableName: string }[])
-      .map((x) => x.tableName)
+    const base = await this.appDb.db
+      .selectFrom('app_users as u')
+      .innerJoin('app_roles as r', 'r.id', 'u.role_id')
+      .select(['u.active', 'r.access_all_tables as accessAll'])
+      .where('u.id', '=', userId)
+      .executeTakeFirst();
+
+    if (!base || !base.active) return null;
+    if (base.accessAll) return { kind: 'all' };
+
+    const tables = await this.appDb.db
+      .selectFrom('app_users as u')
+      .innerJoin('app_role_tables as art', 'art.role_id', 'u.role_id')
+      .select('art.table_name as tableName')
+      .where('u.id', '=', userId)
+      .execute();
+
+    const names = tables
+      .map((x) => String(x.tableName))
       .filter((n) => this.biTables.isBiDataTableName(n));
-    if (names.length === 0) {
-      return { kind: 'restricted', tableNames: [] };
-    }
+
     return { kind: 'restricted', tableNames: names };
   }
 
@@ -114,52 +100,45 @@ export class IamService implements OnModuleInit {
     email: string,
     password: string,
   ): Promise<AuthUserPayload | null> {
-    const rows = await this.schema.executeAppQuery(
-      `SELECT u.id, u.email, u.password_hash AS "passwordHash", u.active, r.slug AS "roleSlug"
-       FROM public.app_users u
-       JOIN public.app_roles r ON r.id = u.role_id
-       WHERE lower(u.email) = lower($1)`,
-      [email.trim()],
-    );
-    const r = rows.rows[0] as
-      | {
-          id: string;
-          email: string;
-          passwordHash: string;
-          active: boolean;
-          roleSlug: string;
-        }
-      | undefined;
-    if (!r || !r.active) {
-      return null;
-    }
-    const ok = await bcrypt.compare(password, r.passwordHash);
-    if (!ok) {
-      return null;
-    }
+    const row = await this.appDb.db
+      .selectFrom('app_users as u')
+      .innerJoin('app_roles as r', 'r.id', 'u.role_id')
+      .select([
+        'u.id',
+        'u.email',
+        'u.password_hash as passwordHash',
+        'u.active',
+        'r.slug as roleSlug',
+      ])
+      .where(sql`lower(u.email)`, '=', email.trim().toLowerCase())
+      .executeTakeFirst();
+
+    if (!row || !row.active) return null;
+    const ok = await bcrypt.compare(password, String(row.passwordHash));
+    if (!ok) return null;
     return {
-      id: r.id,
-      email: r.email,
-      roleSlug: r.roleSlug,
-      active: r.active,
+      id: String(row.id),
+      email: String(row.email),
+      roleSlug: String(row.roleSlug),
+      active: Boolean(row.active),
     };
   }
 
   async findUserByEmail(email: string) {
-    const res = await this.schema.executeAppQuery(
-      `SELECT id FROM public.app_users WHERE lower(email) = lower($1)`,
-      [email.trim()],
-    );
-    return res.rows[0] as { id: string } | undefined;
+    return this.appDb.db
+      .selectFrom('app_users')
+      .select('id')
+      .where(sql`lower(email)`, '=', email.trim().toLowerCase())
+      .executeTakeFirst();
   }
 
   async findRoleIdBySlug(slug: string): Promise<string | null> {
-    const res = await this.schema.executeAppQuery(
-      `SELECT id FROM public.app_roles WHERE slug = $1`,
-      [slug],
-    );
-    const row = res.rows[0] as { id: string } | undefined;
-    return row?.id ?? null;
+    const row = await this.appDb.db
+      .selectFrom('app_roles')
+      .select('id')
+      .where('slug', '=', slug)
+      .executeTakeFirst();
+    return row ? String(row.id) : null;
   }
 
   private async createUserInternal(
@@ -168,13 +147,16 @@ export class IamService implements OnModuleInit {
     roleId: string,
   ): Promise<string> {
     const passwordHash = await bcrypt.hash(password, BCRYPT_ROUNDS);
-    const res = await this.schema.executeAppQuery(
-      `INSERT INTO public.app_users (email, password_hash, role_id)
-       VALUES ($1, $2, $3)
-       RETURNING id`,
-      [email.trim().toLowerCase(), passwordHash, roleId],
-    );
-    return String((res.rows[0] as { id: string }).id);
+    const row = await this.appDb.db
+      .insertInto('app_users')
+      .values({
+        email: email.trim().toLowerCase(),
+        password_hash: passwordHash,
+        role_id: roleId,
+      })
+      .returning('id')
+      .executeTakeFirstOrThrow();
+    return String(row.id);
   }
 
   async createUser(
@@ -186,35 +168,41 @@ export class IamService implements OnModuleInit {
       throw new BadRequestException('Mot de passe : 8 caractères minimum');
     }
     const ex = await this.findUserByEmail(email);
-    if (ex) {
-      throw new BadRequestException('Email déjà utilisé');
-    }
+    if (ex) throw new BadRequestException('Email déjà utilisé');
     const id = await this.createUserInternal(email, password, roleId);
     return { id };
   }
 
   async listRoles() {
-    const r = await this.schema.executeAppQuery(
-      `SELECT r.id, r.name, r.slug, r.description, r.access_all_tables AS "accessAll", r.created_at AS "createdAt"
-       FROM public.app_roles r
-       ORDER BY r.name`,
-    );
-    const tables = await this.schema.executeAppQuery(
-      `SELECT role_id AS "roleId", table_name AS "tableName" FROM public.app_role_tables`,
-    );
+    const roles = await this.appDb.db
+      .selectFrom('app_roles as r')
+      .select([
+        'r.id',
+        'r.name',
+        'r.slug',
+        'r.description',
+        'r.access_all_tables as accessAll',
+        'r.created_at as createdAt',
+      ])
+      .orderBy('r.name', 'asc')
+      .execute();
+
+    const tableMappings = await this.appDb.db
+      .selectFrom('app_role_tables')
+      .select(['role_id as roleId', 'table_name as tableName'])
+      .execute();
+
     const byRole = new Map<string, string[]>();
-    for (const row of tables.rows as { roleId: string; tableName: string }[]) {
-      const list = byRole.get(row.roleId) ?? [];
-      list.push(row.tableName);
-      byRole.set(row.roleId, list);
+    for (const row of tableMappings) {
+      const list = byRole.get(String(row.roleId)) ?? [];
+      list.push(String(row.tableName));
+      byRole.set(String(row.roleId), list);
     }
-    return r.rows.map((row) => {
-      const id = String(row['id']);
-      return {
-        ...row,
-        tables: byRole.get(id) ?? [],
-      };
-    });
+
+    return roles.map((r) => ({
+      ...r,
+      tables: byRole.get(String(r.id)) ?? [],
+    }));
   }
 
   async createRole(
@@ -223,13 +211,11 @@ export class IamService implements OnModuleInit {
     accessAllTables: boolean,
     description: string | null,
   ) {
-    const res = await this.schema.executeAppQuery(
-      `INSERT INTO public.app_roles (name, slug, description, access_all_tables)
-       VALUES ($1, $2, $3, $4)
-       RETURNING id, name, slug, description, access_all_tables AS "accessAll"`,
-      [name, slug, description, accessAllTables],
-    );
-    return res.rows[0];
+    return this.appDb.db
+      .insertInto('app_roles')
+      .values({ name, slug, description, access_all_tables: accessAllTables })
+      .returning(['id', 'name', 'slug', 'description', 'access_all_tables as accessAll'])
+      .executeTakeFirstOrThrow();
   }
 
   async setRoleTables(roleId: string, tableNames: string[]) {
@@ -238,47 +224,42 @@ export class IamService implements OnModuleInit {
         throw new BadRequestException(`Table inconnue ou non autorisée : ${t}`);
       }
     }
-    await this.schema.executeAppQuery(
-      `DELETE FROM public.app_role_tables WHERE role_id = $1`,
-      [roleId],
-    );
+    await this.appDb.db
+      .deleteFrom('app_role_tables')
+      .where('role_id', '=', roleId)
+      .execute();
     for (const t of tableNames) {
-      await this.schema.executeAppQuery(
-        `INSERT INTO public.app_role_tables (role_id, table_name) VALUES ($1, $2)`,
-        [roleId, t],
-      );
+      await this.appDb.db
+        .insertInto('app_role_tables')
+        .values({ role_id: roleId, table_name: t })
+        .execute();
     }
     return { ok: true as const };
   }
 
   async listUsers() {
-    const r = await this.schema.executeAppQuery(
-      `SELECT u.id, u.email, u.active, u.role_id AS "roleId", u.created_at AS "createdAt",
-              r.slug AS "roleSlug", r.name AS "roleName"
-       FROM public.app_users u
-       JOIN public.app_roles r ON r.id = u.role_id
-       ORDER BY u.email`,
-    );
-    return r.rows;
+    return this.appDb.db
+      .selectFrom('app_users as u')
+      .innerJoin('app_roles as r', 'r.id', 'u.role_id')
+      .select([
+        'u.id',
+        'u.email',
+        'u.active',
+        'u.role_id as roleId',
+        'u.created_at as createdAt',
+        'r.slug as roleSlug',
+        'r.name as roleName',
+      ])
+      .orderBy('u.email', 'asc')
+      .execute();
   }
 
-  private async getUserRowById(
-    id: string,
-  ): Promise<{
-    id: string;
-    email: string;
-    roleId: string;
-    active: boolean;
-    passwordHash: string;
-  } | null> {
-    const r = await this.schema.executeAppQuery(
-      `SELECT u.id, u.email, u.role_id AS "roleId", u.active,
-              u.password_hash AS "passwordHash"
-       FROM public.app_users u
-       WHERE u.id = $1`,
-      [id],
-    );
-    const row = r.rows[0] as
+  private async getUserRowById(id: string) {
+    return this.appDb.db
+      .selectFrom('app_users')
+      .select(['id', 'email', 'role_id as roleId', 'active', 'password_hash as passwordHash'])
+      .where('id', '=', id)
+      .executeTakeFirst() as Promise<
       | {
           id: string;
           email: string;
@@ -286,8 +267,8 @@ export class IamService implements OnModuleInit {
           active: boolean;
           passwordHash: string;
         }
-      | undefined;
-    return row ?? null;
+      | undefined
+    >;
   }
 
   async updateUser(
@@ -304,31 +285,33 @@ export class IamService implements OnModuleInit {
       );
     }
     const row = await this.getUserRowById(userId);
-    if (!row) {
-      throw new NotFoundException('Utilisateur introuvable');
-    }
+    if (!row) throw new NotFoundException('Utilisateur introuvable');
+
     if (patches.roleId) {
-      const roleCheck = await this.schema.executeAppQuery(
-        `SELECT id FROM public.app_roles WHERE id = $1`,
-        [patches.roleId],
-      );
-      if (!roleCheck.rows[0]) {
-        throw new BadRequestException('Rôle introuvable');
-      }
+      const roleCheck = await this.appDb.db
+        .selectFrom('app_roles')
+        .select('id')
+        .where('id', '=', patches.roleId)
+        .executeTakeFirst();
+      if (!roleCheck) throw new BadRequestException('Rôle introuvable');
     }
+
     const newRoleId = patches.roleId ?? row.roleId;
-    const newActive =
-      patches.active !== undefined ? patches.active : row.active;
-    let newHash = row.passwordHash;
-    if (patches.password) {
-      newHash = await bcrypt.hash(patches.password, BCRYPT_ROUNDS);
-    }
-    await this.schema.executeAppQuery(
-      `UPDATE public.app_users
-       SET role_id = $1, active = $2, password_hash = $3
-       WHERE id = $4`,
-      [newRoleId, newActive, newHash, userId],
-    );
+    const newActive = patches.active !== undefined ? patches.active : row.active;
+    const newHash = patches.password
+      ? await bcrypt.hash(patches.password, BCRYPT_ROUNDS)
+      : row.passwordHash;
+
+    await this.appDb.db
+      .updateTable('app_users')
+      .set({
+        role_id: newRoleId,
+        active: newActive,
+        password_hash: newHash,
+      })
+      .where('id', '=', userId)
+      .execute();
+
     return { ok: true as const };
   }
 
@@ -372,18 +355,24 @@ export class IamService implements OnModuleInit {
     hasApiKey: boolean;
   }> {
     await this.ensureLlmSettingsTable();
-    const r = await this.schema.executeAppQuery(
-      `SELECT provider, model, api_key IS NOT NULL AND length(trim(api_key)) > 0 AS "hasApiKey"
-       FROM public.bi_llm_settings
-       WHERE id = true`,
-    );
-    const row = r.rows[0] as
-      | { provider: 'gemini' | 'gpt' | 'claude'; model: string; hasApiKey: boolean }
-      | undefined;
+    const row = await this.appDb.db
+      .selectFrom('bi_llm_settings')
+      .select([
+        'provider',
+        'model',
+        sql<boolean>`api_key IS NOT NULL AND length(trim(api_key)) > 0`.as('hasApiKey'),
+      ])
+      .where('id', '=', true)
+      .executeTakeFirst();
+
     if (!row) {
       return { provider: 'gemini', model: 'gemini-2.5-flash', hasApiKey: false };
     }
-    return row;
+    return {
+      provider: row.provider as 'gemini' | 'gpt' | 'claude',
+      model: String(row.model),
+      hasApiKey: Boolean(row.hasApiKey),
+    };
   }
 
   async setLlmSettings(input: {
@@ -392,35 +381,54 @@ export class IamService implements OnModuleInit {
     apiKey?: string;
   }): Promise<{ ok: true }> {
     await this.ensureLlmSettingsTable();
-    const provider = input.provider;
     const model = String(input.model || '').trim();
-    if (!model) {
-      throw new BadRequestException('Le modèle est obligatoire.');
-    }
+    if (!model) throw new BadRequestException('Le modèle est obligatoire.');
+
     const hasApiKeyField = Object.prototype.hasOwnProperty.call(input, 'apiKey');
+
     if (hasApiKeyField) {
-      const apiKey = (input.apiKey ?? '').trim();
-      await this.schema.executeAppQuery(
-        `INSERT INTO public.bi_llm_settings (id, provider, model, api_key, updated_at)
-         VALUES (true, $1, $2, NULLIF($3, ''), now())
-         ON CONFLICT (id)
-         DO UPDATE SET provider = EXCLUDED.provider, model = EXCLUDED.model, api_key = NULLIF($3, ''), updated_at = now()`,
-        [provider, model, apiKey],
-      );
-      return { ok: true as const };
+      const apiKey = (input.apiKey ?? '').trim() || null;
+      await this.appDb.db
+        .insertInto('bi_llm_settings')
+        .values({
+          id: true,
+          provider: input.provider,
+          model,
+          api_key: apiKey,
+          updated_at: sql`now()`,
+        })
+        .onConflict((oc) =>
+          oc.column('id').doUpdateSet({
+            provider: input.provider,
+            model,
+            api_key: apiKey,
+            updated_at: sql`now()`,
+          }),
+        )
+        .execute();
+    } else {
+      await this.appDb.db
+        .insertInto('bi_llm_settings')
+        .values({
+          id: true,
+          provider: input.provider,
+          model,
+          updated_at: sql`now()`,
+        })
+        .onConflict((oc) =>
+          oc.column('id').doUpdateSet({
+            provider: input.provider,
+            model,
+            updated_at: sql`now()`,
+          }),
+        )
+        .execute();
     }
-    await this.schema.executeAppQuery(
-      `INSERT INTO public.bi_llm_settings (id, provider, model, updated_at)
-       VALUES (true, $1, $2, now())
-       ON CONFLICT (id)
-       DO UPDATE SET provider = EXCLUDED.provider, model = EXCLUDED.model, updated_at = now()`,
-      [provider, model],
-    );
     return { ok: true as const };
   }
 
   private async ensureLlmSettingsTable(): Promise<void> {
-    await this.schema.executeAppQuery(`
+    await this.appDb.executeDdl(`
       CREATE TABLE IF NOT EXISTS public.bi_llm_settings (
         id boolean PRIMARY KEY DEFAULT true,
         provider varchar(20) NOT NULL DEFAULT 'gemini',

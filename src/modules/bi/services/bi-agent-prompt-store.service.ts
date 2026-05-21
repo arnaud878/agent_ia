@@ -4,6 +4,7 @@ import {
   Logger,
   OnModuleInit,
 } from '@nestjs/common';
+import { sql } from 'kysely';
 import {
   AGENT_PROMPT_DEFINITIONS,
   AGENT_PROMPT_IDS,
@@ -14,20 +15,20 @@ import {
   bodyMatchesInstallDefault,
   getInstallDefaultPrompt,
 } from '../bi-prompt-install-defaults';
-import { SchemaService } from './schema.service';
+import { AppDbService } from '../../../common/db/app-db.service';
 
 @Injectable()
 export class BiAgentPromptStoreService implements OnModuleInit {
   private readonly log = new Logger(BiAgentPromptStoreService.name);
 
-  constructor(private readonly schema: SchemaService) {}
+  constructor(private readonly appDb: AppDbService) {}
 
   async onModuleInit(): Promise<void> {
     await this.ensureTableAndSeed();
   }
 
   private async ensureTableAndSeed(): Promise<void> {
-    await this.schema.executeAppQuery(`
+    await this.appDb.executeDdl(`
       CREATE TABLE IF NOT EXISTS public.bi_agent_prompts (
         id text PRIMARY KEY,
         file_name text NOT NULL UNIQUE,
@@ -35,30 +36,31 @@ export class BiAgentPromptStoreService implements OnModuleInit {
         body text NOT NULL DEFAULT '',
         updated_at timestamptz NOT NULL DEFAULT now()
       )`);
+
     for (const d of AGENT_PROMPT_DEFINITIONS) {
-      await this.schema.executeAppQuery(
-        `INSERT INTO public.bi_agent_prompts (id, file_name, label, body)
-         VALUES ($1, $2, $3, '')
-         ON CONFLICT (id) DO NOTHING`,
-        [d.id, d.fileName, d.labelFr],
-      );
+      await this.appDb.db
+        .insertInto('bi_agent_prompts')
+        .values({ id: d.id, file_name: d.fileName, label: d.labelFr, body: '' })
+        .onConflict((oc) => oc.column('id').doNothing())
+        .execute();
     }
+
     for (const id of AGENT_PROMPT_IDS) {
-      const r = await this.schema.executeAppQuery(
-        `SELECT body FROM public.bi_agent_prompts WHERE id = $1`,
-        [id],
-      );
-      const row = r.rows[0] as { body?: string } | undefined;
+      const row = await this.appDb.db
+        .selectFrom('bi_agent_prompts')
+        .select('body')
+        .where('id', '=', id)
+        .executeTakeFirst();
+
       const stored = row?.body ?? '';
       if (stored.trim().length === 0) {
         const fallback = getInstallDefaultPrompt(id);
-        await this.schema.executeAppQuery(
-          `UPDATE public.bi_agent_prompts
-           SET body = $2, updated_at = now()
-           WHERE id = $1`,
-          [id, fallback],
-        );
-        this.log.log(`Prompt ${id}: corps vide en base → modèle d’installation écrit.`);
+        await this.appDb.db
+          .updateTable('bi_agent_prompts')
+          .set({ body: fallback, updated_at: sql`now()` })
+          .where('id', '=', id)
+          .execute();
+        this.log.log(`Prompt ${id}: corps vide en base → modèle d'installation écrit.`);
       }
     }
   }
@@ -72,47 +74,34 @@ export class BiAgentPromptStoreService implements OnModuleInit {
 
   async resolvePromptBody(id: AgentPromptId): Promise<string> {
     const def = getAgentPromptDefinition(id);
-    if (!def) {
-      throw new Error(`Définition prompt manquante: ${id}`);
-    }
-    const r = await this.schema.executeAppQuery(
-      `SELECT body FROM public.bi_agent_prompts WHERE id = $1`,
-      [id],
-    );
-    const row = r.rows[0] as { body?: string } | undefined;
+    if (!def) throw new Error(`Définition prompt manquante: ${id}`);
+
+    const row = await this.appDb.db
+      .selectFrom('bi_agent_prompts')
+      .select('body')
+      .where('id', '=', id)
+      .executeTakeFirst();
+
     const stored = row?.body ?? '';
-    if (stored.trim().length > 0) {
-      return stored;
-    }
+    if (stored.trim().length > 0) return stored;
+
     const fallback = getInstallDefaultPrompt(id);
     this.log.warn(
-      `Prompt ${id}: corps DB vide à l’exécution — repli modèle d’installation (vérifiez la base).`,
+      `Prompt ${id}: corps DB vide à l'exécution — repli modèle d'installation.`,
     );
     return fallback;
   }
 
-  async listPromptsWithSource(): Promise<
-    Array<{
-      id: AgentPromptId;
-      fileName: string;
-      labelFr: string;
-      labelEn: string;
-      isCustomized: boolean;
-      variables: Array<{
-        token: string;
-        descriptionFr: string;
-        descriptionEn: string;
-      }>;
-    }>
-  > {
-    const r = await this.schema.executeAppQuery(
-      `SELECT id, body FROM public.bi_agent_prompts WHERE id = ANY($1::text[])`,
-      [Array.from(AGENT_PROMPT_IDS)],
-    );
+  async listPromptsWithSource() {
+    const rows = await this.appDb.db
+      .selectFrom('bi_agent_prompts')
+      .select(['id', 'body'])
+      .where('id', 'in', Array.from(AGENT_PROMPT_IDS))
+      .execute();
+
     const byId = new Map<string, string>();
-    for (const row of r.rows as { id: string; body: string }[]) {
-      byId.set(row.id, row.body ?? '');
-    }
+    for (const row of rows) byId.set(row.id, row.body ?? '');
+
     return AGENT_PROMPT_DEFINITIONS.map((d) => {
       const stored = byId.get(d.id) ?? '';
       return {
@@ -133,17 +122,17 @@ export class BiAgentPromptStoreService implements OnModuleInit {
   async getPromptDetail(id: string) {
     const pid = this.assertPromptId(id);
     const def = getAgentPromptDefinition(pid)!;
-    const r = await this.schema.executeAppQuery(
-      `SELECT body, updated_at FROM public.bi_agent_prompts WHERE id = $1`,
-      [pid],
-    );
-    const row = r.rows[0] as
-      | { body: string; updated_at: Date }
-      | undefined;
+
+    const row = await this.appDb.db
+      .selectFrom('bi_agent_prompts')
+      .select(['body', 'updated_at as updatedAt'])
+      .where('id', '=', pid)
+      .executeTakeFirst();
+
     const storedBody = row?.body ?? '';
     const defaultBody = getInstallDefaultPrompt(pid);
-    const effectiveBody =
-      storedBody.trim().length > 0 ? storedBody : defaultBody;
+    const effectiveBody = storedBody.trim().length > 0 ? storedBody : defaultBody;
+
     return {
       id: pid,
       fileName: def.fileName,
@@ -158,13 +147,13 @@ export class BiAgentPromptStoreService implements OnModuleInit {
       defaultBody,
       effectiveBody,
       isCustomized: !bodyMatchesInstallDefault(pid, storedBody),
-      updatedAt: row?.updated_at?.toISOString?.() ?? null,
+      updatedAt:
+        row?.updatedAt instanceof Date
+          ? row.updatedAt.toISOString()
+          : (row?.updatedAt ? String(row.updatedAt) : null),
     };
   }
 
-  /**
-   * Corps null, absent ou vide après trim → réinitialise au modèle d’installation (une seule source hors base).
-   */
   async setPromptBody(id: string, body: string | null): Promise<void> {
     const pid = this.assertPromptId(id);
     const def = getAgentPromptDefinition(pid)!;
@@ -172,13 +161,19 @@ export class BiAgentPromptStoreService implements OnModuleInit {
       body == null || body.trim().length === 0
         ? getInstallDefaultPrompt(pid)
         : body;
-    await this.schema.executeAppQuery(
-      `INSERT INTO public.bi_agent_prompts (id, file_name, label, body, updated_at)
-       VALUES ($1, $2, $3, $4, now())
-       ON CONFLICT (id) DO UPDATE SET
-         body = EXCLUDED.body,
-         updated_at = now()`,
-      [pid, def.fileName, def.labelFr, normalized],
-    );
+
+    await this.appDb.db
+      .insertInto('bi_agent_prompts')
+      .values({
+        id: pid,
+        file_name: def.fileName,
+        label: def.labelFr,
+        body: normalized,
+        updated_at: sql`now()`,
+      })
+      .onConflict((oc) =>
+        oc.column('id').doUpdateSet({ body: normalized, updated_at: sql`now()` }),
+      )
+      .execute();
   }
 }

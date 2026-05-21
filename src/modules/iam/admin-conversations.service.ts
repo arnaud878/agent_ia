@@ -1,6 +1,5 @@
 import { Injectable, Logger, NotFoundException } from '@nestjs/common';
-import type { QueryResult } from 'pg';
-import { SchemaService } from '../bi/services/schema.service';
+import { AppDbService } from '../../common/db/app-db.service';
 
 export type AdminConversationRow = {
   id: string;
@@ -57,7 +56,7 @@ const MAX_PAGE_LIMIT = 200;
 export class AdminConversationsService {
   private readonly log = new Logger(AdminConversationsService.name);
 
-  constructor(private readonly schema: SchemaService) {}
+  constructor(private readonly appDb: AppDbService) {}
 
   async listConversations(params: {
     page?: number;
@@ -69,59 +68,62 @@ export class AdminConversationsService {
     const limit = Math.min(MAX_PAGE_LIMIT, Math.max(1, params.limit ?? 50));
     const offset = (page - 1) * limit;
 
-    const conditions: string[] = [];
-    const values: unknown[] = [];
-    let idx = 1;
+    let baseQuery = this.appDb.db
+      .selectFrom('bi_conversations as c')
+      .innerJoin('app_users as u', 'u.id', 'c.user_id');
 
     if (params.search) {
-      conditions.push(
-        `(c.title ILIKE $${idx} OR u.email ILIKE $${idx} OR c.display_key ILIKE $${idx})`,
+      const term = `%${params.search}%`;
+      baseQuery = baseQuery.where((eb) =>
+        eb.or([
+          eb('c.title', 'ilike', term),
+          eb('u.email', 'ilike', term),
+          eb('c.display_key', 'ilike', term),
+        ]),
       );
-      values.push(`%${params.search}%`);
-      idx++;
     }
-
     if (params.userId) {
-      conditions.push(`c.user_id = $${idx}`);
-      values.push(params.userId);
-      idx++;
+      baseQuery = baseQuery.where('c.user_id', '=', params.userId);
     }
 
-    const where = conditions.length > 0 ? `WHERE ${conditions.join(' AND ')}` : '';
+    const countRes = await baseQuery
+      .select((eb) => eb.fn.countAll<string>().as('total'))
+      .executeTakeFirst();
+    const total = Number(countRes?.total ?? 0);
 
-    const countRes = (await this.schema.executeAppQuery(
-      `SELECT COUNT(*) AS total
-       FROM public.bi_conversations c
-       JOIN public.app_users u ON u.id = c.user_id
-       ${where}`,
-      values,
-    )) as QueryResult<{ total: number }>;
-
-    const total = Number(countRes.rows[0]?.total ?? 0);
-
-    const q = `SELECT
-        c.id,
-        c.display_key AS "displayKey",
-        c.title,
-        c.created_at AS "createdAt",
-        c.updated_at AS "updatedAt",
-        u.email AS "userEmail",
-        u.id AS "userId",
-        (SELECT COUNT(*) FROM public.bi_conversation_messages m WHERE m.conversation_id = c.id) AS "messageCount"
-      FROM public.bi_conversations c
-      JOIN public.app_users u ON u.id = c.user_id
-      ${where}
-      ORDER BY c.updated_at DESC
-      LIMIT $${idx} OFFSET $${idx + 1}`;
-
-    const res = (await this.schema.executeAppQuery(q, [
-      ...values,
-      limit,
-      offset,
-    ])) as QueryResult<AdminConversationRow>;
+    const rows = await baseQuery
+      .select([
+        'c.id',
+        'c.display_key as displayKey',
+        'c.title',
+        'c.created_at as createdAt',
+        'c.updated_at as updatedAt',
+        'u.email as userEmail',
+        'u.id as userId',
+      ])
+      .select((eb) =>
+        eb
+          .selectFrom('bi_conversation_messages as m')
+          .select(eb.fn.countAll<string>().as('cnt'))
+          .whereRef('m.conversation_id', '=', 'c.id')
+          .as('messageCount'),
+      )
+      .orderBy('c.updated_at', 'desc')
+      .limit(limit)
+      .offset(offset)
+      .execute();
 
     return {
-      rows: (res.rows ?? []) as unknown as AdminConversationRow[],
+      rows: rows.map((r) => ({
+        id: String(r.id),
+        displayKey: String(r.displayKey),
+        title: r.title ?? null,
+        createdAt: String(r.createdAt),
+        updatedAt: String(r.updatedAt),
+        userEmail: String(r.userEmail),
+        userId: String(r.userId),
+        messageCount: Number(r.messageCount ?? 0),
+      })),
       total,
       page,
       limit,
@@ -129,44 +131,43 @@ export class AdminConversationsService {
   }
 
   async getMessages(conversationId: string): Promise<AdminMessageRow[]> {
-    const exists = (await this.schema.executeAppQuery(
-      `SELECT 1 AS o FROM public.bi_conversations WHERE id = $1`,
-      [conversationId],
-    )) as QueryResult<{ o: number }>;
+    const exists = await this.appDb.db
+      .selectFrom('bi_conversations')
+      .select('id')
+      .where('id', '=', conversationId)
+      .executeTakeFirst();
+    if (!exists) throw new NotFoundException('Conversation introuvable');
 
-    if (!exists.rows?.length) {
-      throw new NotFoundException('Conversation introuvable');
-    }
+    const rows = await this.appDb.db
+      .selectFrom('bi_conversation_messages')
+      .select([
+        'id',
+        'role',
+        'body_text as text',
+        'body_html as html',
+        'duration_ms as durationMs',
+        'requete_sql as requeteSQL',
+        'resultat_sql as resultatSQL',
+        'created_at as createdAt',
+      ])
+      .where('conversation_id', '=', conversationId)
+      .orderBy('created_at', 'asc')
+      .orderBy('id', 'asc')
+      .execute();
 
-    const q = `SELECT
-        id,
-        role,
-        body_text AS "text",
-        body_html AS "html",
-        duration_ms AS "durationMs",
-        requete_sql AS "requeteSQL",
-        resultat_sql AS "resultatSQL",
-        created_at AS "createdAt"
-      FROM public.bi_conversation_messages
-      WHERE conversation_id = $1
-      ORDER BY created_at ASC, id ASC`;
-    const res = (await this.schema.executeAppQuery(q, [
+    return rows.map((r) => ({
+      id: String(r.id),
+      role: r.role as 'user' | 'assistant',
+      text: r.text ?? null,
+      html: r.html ?? null,
+      durationMs: r.durationMs === null ? null : Number(r.durationMs),
+      requeteSQL: r.requeteSQL ?? null,
+      resultatSQL: r.resultatSQL ?? null,
+      createdAt: String(r.createdAt),
       conversationId,
-    ])) as QueryResult<Record<string, unknown>>;
-
-    return (res.rows ?? []).map((r) => ({
-      id: r['id'] as string,
-      role: r['role'] as 'user' | 'assistant',
-      text: (r['text'] as string | null) ?? null,
-      html: (r['html'] as string | null) ?? null,
-      durationMs:
-        r['durationMs'] === null || r['durationMs'] === undefined
-          ? null
-          : Number(r['durationMs']),
-      requeteSQL: (r['requeteSQL'] as string | null) ?? null,
-      resultatSQL: (r['resultatSQL'] as string | null) ?? null,
-      createdAt: String(r['createdAt'] ?? ''),
-    })) as AdminMessageRow[];
+      displayKey: '',
+      userEmail: '',
+    }));
   }
 
   async listAllMessages(params: {
@@ -179,79 +180,65 @@ export class AdminConversationsService {
     const limit = Math.min(MAX_PAGE_LIMIT, Math.max(1, params.limit ?? 50));
     const offset = (page - 1) * limit;
 
-    const conditions: string[] = [];
-    const values: unknown[] = [];
-    let idx = 1;
+    let baseQuery = this.appDb.db
+      .selectFrom('bi_conversation_messages as m')
+      .innerJoin('bi_conversations as c', 'c.id', 'm.conversation_id')
+      .innerJoin('app_users as u', 'u.id', 'c.user_id');
 
     if (params.search) {
-      conditions.push(
-        `(m.body_text ILIKE $${idx} OR m.requete_sql ILIKE $${idx} OR m.resultat_sql ILIKE $${idx} OR u.email ILIKE $${idx} OR c.display_key ILIKE $${idx})`,
+      const term = `%${params.search}%`;
+      baseQuery = baseQuery.where((eb) =>
+        eb.or([
+          eb('m.body_text', 'ilike', term),
+          eb('m.requete_sql', 'ilike', term),
+          eb('m.resultat_sql', 'ilike', term),
+          eb('u.email', 'ilike', term),
+          eb('c.display_key', 'ilike', term),
+        ]),
       );
-      values.push(`%${params.search}%`);
-      idx++;
     }
-
     if (params.role) {
-      conditions.push(`m.role = $${idx}`);
-      values.push(params.role);
-      idx++;
+      baseQuery = baseQuery.where('m.role', '=', params.role);
     }
 
-    const where = conditions.length > 0 ? `WHERE ${conditions.join(' AND ')}` : '';
+    const countRes = await baseQuery
+      .select((eb) => eb.fn.countAll<string>().as('total'))
+      .executeTakeFirst();
+    const total = Number(countRes?.total ?? 0);
 
-    const countRes = (await this.schema.executeAppQuery(
-      `SELECT COUNT(*) AS total
-       FROM public.bi_conversation_messages m
-       JOIN public.bi_conversations c ON c.id = m.conversation_id
-       JOIN public.app_users u ON u.id = c.user_id
-       ${where}`,
-      values,
-    )) as QueryResult<{ total: number }>;
-
-    const total = Number(countRes.rows[0]?.total ?? 0);
-
-    const q = `SELECT
-        m.id,
-        m.role,
-        m.body_text AS "text",
-        m.body_html AS "html",
-        m.duration_ms AS "durationMs",
-        m.requete_sql AS "requeteSQL",
-        m.resultat_sql AS "resultatSQL",
-        m.created_at AS "createdAt",
-        c.id AS "conversationId",
-        c.display_key AS "displayKey",
-        u.email AS "userEmail"
-      FROM public.bi_conversation_messages m
-      JOIN public.bi_conversations c ON c.id = m.conversation_id
-      JOIN public.app_users u ON u.id = c.user_id
-      ${where}
-      ORDER BY m.created_at DESC
-      LIMIT $${idx} OFFSET $${idx + 1}`;
-
-    const res = (await this.schema.executeAppQuery(q, [
-      ...values,
-      limit,
-      offset,
-    ])) as QueryResult<Record<string, unknown>>;
+    const rows = await baseQuery
+      .select([
+        'm.id',
+        'm.role',
+        'm.body_text as text',
+        'm.body_html as html',
+        'm.duration_ms as durationMs',
+        'm.requete_sql as requeteSQL',
+        'm.resultat_sql as resultatSQL',
+        'm.created_at as createdAt',
+        'c.id as conversationId',
+        'c.display_key as displayKey',
+        'u.email as userEmail',
+      ])
+      .orderBy('m.created_at', 'desc')
+      .limit(limit)
+      .offset(offset)
+      .execute();
 
     return {
-      rows: (res.rows ?? []).map((r) => ({
-        id: r['id'] as string,
-        role: r['role'] as 'user' | 'assistant',
-        text: (r['text'] as string | null) ?? null,
-        html: (r['html'] as string | null) ?? null,
-        durationMs:
-          r['durationMs'] === null || r['durationMs'] === undefined
-            ? null
-            : Number(r['durationMs']),
-        requeteSQL: (r['requeteSQL'] as string | null) ?? null,
-        resultatSQL: (r['resultatSQL'] as string | null) ?? null,
-        createdAt: String(r['createdAt'] ?? ''),
-        conversationId: r['conversationId'] as string,
-        displayKey: r['displayKey'] as string,
-        userEmail: r['userEmail'] as string,
-      })) as AdminMessageRow[],
+      rows: rows.map((r) => ({
+        id: String(r.id),
+        role: r.role as 'user' | 'assistant',
+        text: r.text ?? null,
+        html: r.html ?? null,
+        durationMs: r.durationMs === null ? null : Number(r.durationMs),
+        requeteSQL: r.requeteSQL ?? null,
+        resultatSQL: r.resultatSQL ?? null,
+        createdAt: String(r.createdAt),
+        conversationId: String(r.conversationId),
+        displayKey: String(r.displayKey),
+        userEmail: String(r.userEmail),
+      })),
       total,
       page,
       limit,
@@ -275,58 +262,54 @@ export class AdminConversationsService {
       extraWhere = `AND (u.email ILIKE $1 OR um.body_text ILIKE $1 OR c.display_key ILIKE $1 OR c.title ILIKE $1)`;
     }
 
-    const countRes = (await this.schema.executeAppQuery(
+    const countRes = await this.appDb.executeRaw<{ total: string }>(
       `SELECT COUNT(*) AS total
        FROM public.bi_conversation_messages um
        JOIN public.bi_conversations c ON c.id = um.conversation_id
        JOIN public.app_users u ON u.id = c.user_id
        WHERE um.role = 'user' ${extraWhere}`,
       values,
-    )) as QueryResult<{ total: string }>;
-
+    );
     const total = Number(countRes.rows[0]?.total ?? 0);
     const limitIdx = values.length + 1;
     const offsetIdx = values.length + 2;
 
-    const q = `SELECT
-        um.id AS "userMsgId",
-        um.body_text AS "userText",
-        um.created_at AS "userCreatedAt",
-        am.id AS "aiMsgId",
-        am.body_text AS "aiText",
-        am.body_html AS "aiHtml",
-        am.duration_ms AS "durationMs",
-        am.requete_sql AS "requeteSQL",
-        am.resultat_sql AS "resultatSQL",
-        am.created_at AS "aiCreatedAt",
-        c.id AS "conversationId",
-        c.display_key AS "displayKey",
-        c.title,
-        u.email AS "userEmail"
-      FROM public.bi_conversation_messages um
-      JOIN public.bi_conversations c ON c.id = um.conversation_id
-      JOIN public.app_users u ON u.id = c.user_id
-      LEFT JOIN LATERAL (
-        SELECT id, body_text, body_html, duration_ms, requete_sql, resultat_sql, created_at
-        FROM public.bi_conversation_messages a2
-        WHERE a2.conversation_id = um.conversation_id
-          AND a2.role = 'assistant'
-          AND a2.created_at >= um.created_at
-        ORDER BY a2.created_at ASC
-        LIMIT 1
-      ) am ON true
-      WHERE um.role = 'user' ${extraWhere}
-      ORDER BY um.created_at DESC
-      LIMIT $${limitIdx} OFFSET $${offsetIdx}`;
-
-    const res = (await this.schema.executeAppQuery(q, [
-      ...values,
-      limit,
-      offset,
-    ])) as QueryResult<Record<string, unknown>>;
+    const res = await this.appDb.executeRaw<Record<string, unknown>>(
+      `SELECT
+          um.id AS "userMsgId",
+          um.body_text AS "userText",
+          um.created_at AS "userCreatedAt",
+          am.id AS "aiMsgId",
+          am.body_text AS "aiText",
+          am.body_html AS "aiHtml",
+          am.duration_ms AS "durationMs",
+          am.requete_sql AS "requeteSQL",
+          am.resultat_sql AS "resultatSQL",
+          am.created_at AS "aiCreatedAt",
+          c.id AS "conversationId",
+          c.display_key AS "displayKey",
+          c.title,
+          u.email AS "userEmail"
+        FROM public.bi_conversation_messages um
+        JOIN public.bi_conversations c ON c.id = um.conversation_id
+        JOIN public.app_users u ON u.id = c.user_id
+        LEFT JOIN LATERAL (
+          SELECT id, body_text, body_html, duration_ms, requete_sql, resultat_sql, created_at
+          FROM public.bi_conversation_messages a2
+          WHERE a2.conversation_id = um.conversation_id
+            AND a2.role = 'assistant'
+            AND a2.created_at >= um.created_at
+          ORDER BY a2.created_at ASC
+          LIMIT 1
+        ) am ON true
+        WHERE um.role = 'user' ${extraWhere}
+        ORDER BY um.created_at DESC
+        LIMIT $${limitIdx} OFFSET $${offsetIdx}`,
+      [...values, limit, offset],
+    );
 
     return {
-      rows: (res.rows ?? []).map((r) => ({
+      rows: res.rows.map((r) => ({
         userMsgId: r['userMsgId'] as string,
         userText: (r['userText'] as string | null) ?? null,
         userCreatedAt: String(r['userCreatedAt'] ?? ''),
@@ -341,7 +324,7 @@ export class AdminConversationsService {
         displayKey: r['displayKey'] as string,
         title: (r['title'] as string | null) ?? null,
         userEmail: r['userEmail'] as string,
-      })) as TurnRow[],
+      })),
       total,
       page,
       limit,
@@ -350,24 +333,18 @@ export class AdminConversationsService {
 
   async removeConversation(conversationId: string): Promise<void> {
     try {
-      await this.schema.executeAppQuery(
-        `DELETE FROM public.n8n_chat_histories_v6 WHERE session_id = $1`,
-        [conversationId],
-      );
+      await this.appDb.db
+        .deleteFrom('n8n_chat_histories_v6')
+        .where('session_id', '=', conversationId)
+        .execute();
     } catch (e) {
       this.log.warn('Suppression historique agent: %s', (e as Error).message);
     }
-    try {
-      const res = (await this.schema.executeAppQuery(
-        `DELETE FROM public.bi_conversations WHERE id = $1 RETURNING id`,
-        [conversationId],
-      )) as QueryResult<{ id: string }>;
-      if (!res.rows?.length) {
-        throw new NotFoundException('Conversation introuvable');
-      }
-    } catch (e) {
-      if (e instanceof NotFoundException) throw e;
-      this.log.warn('Suppression conversation: %s', (e as Error).message);
-    }
+    const res = await this.appDb.db
+      .deleteFrom('bi_conversations')
+      .where('id', '=', conversationId)
+      .returning('id')
+      .executeTakeFirst();
+    if (!res) throw new NotFoundException('Conversation introuvable');
   }
 }

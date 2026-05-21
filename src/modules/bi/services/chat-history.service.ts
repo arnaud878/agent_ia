@@ -1,7 +1,6 @@
 import { Injectable, Logger } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
-import type { QueryResult } from 'pg';
-import { SchemaService } from './schema.service';
+import { AppDbService } from '../../../common/db/app-db.service';
 
 export type HistoryRow = { role: 'user' | 'assistant'; text: string };
 
@@ -11,65 +10,53 @@ export class ChatHistoryService {
 
   constructor(
     private readonly config: ConfigService,
-    private readonly schema: SchemaService,
+    private readonly appDb: AppDbService,
   ) {}
 
   getMaxMessages(): number {
     const n = this.config.get<string>('CHAT_HISTORY_MAX_MESSAGES');
     const p = n ? parseInt(n, 10) : 4;
-    if (!Number.isFinite(p) || p < 0) {
-      return 4;
-    }
+    if (!Number.isFinite(p) || p < 0) return 4;
     return Math.min(50, p);
   }
 
-  /**
-   * Derniers messages (ordre chrono) pour alimenter l’agent.
-   * Chaque entrée = une ligne user ou assistant.
-   * L’affichage UI des conversations repose sur `bi_conversation_messages` (hors n8n).
-   */
   async loadForSession(
     sessionId: string,
     limit: number,
   ): Promise<HistoryRow[]> {
-    if (limit <= 0) {
-      return [];
-    }
-    const q = `SELECT message
-      FROM public.n8n_chat_histories_v6
-      WHERE session_id = $1
-      ORDER BY id DESC
-      LIMIT $2`;
-    let res: QueryResult<{ message: unknown }>;
+    if (limit <= 0) return [];
     try {
-      res = (await this.schema.executeAppQuery(q, [
-        sessionId,
-        limit,
-      ])) as QueryResult<{ message: unknown }>;
+      const rows = await this.appDb.db
+        .selectFrom('n8n_chat_histories_v6')
+        .select('message')
+        .where('session_id', '=', sessionId)
+        .orderBy('id', 'desc')
+        .limit(limit)
+        .execute();
+
+      return rows
+        .map((r) => r.message)
+        .reverse()
+        .map((m) => this.parseMessage(m))
+        .filter((x): x is HistoryRow => x !== null);
     } catch (e) {
       this.log.warn('Historique indisponible: %s', (e as Error).message);
       return [];
     }
-    const raw = (res.rows ?? [])
-      .map((r) => r.message)
-      .reverse()
-      .map((m) => this.parseMessage(m))
-      .filter((x): x is HistoryRow => x !== null);
-    return raw;
   }
 
   async append(
     sessionId: string,
     message: { role: 'user' | 'assistant'; text: string },
   ): Promise<void> {
-    const q = `INSERT INTO public.n8n_chat_histories_v6 (session_id, message)
-      VALUES ($1, $2::jsonb)`;
-    const payload = {
-      role: message.role,
-      text: message.text,
-    };
     try {
-      await this.schema.executeAppQuery(q, [sessionId, JSON.stringify(payload)]);
+      await this.appDb.db
+        .insertInto('n8n_chat_histories_v6')
+        .values({
+          session_id: sessionId,
+          message: JSON.parse(JSON.stringify(message)) as unknown,
+        })
+        .execute();
     } catch (e) {
       this.log.warn(
         'Enregistrement historique échoué: %s',
@@ -79,18 +66,12 @@ export class ChatHistoryService {
   }
 
   private parseMessage(message: unknown): HistoryRow | null {
-    if (!message || typeof message !== 'object') {
-      return null;
-    }
+    if (!message || typeof message !== 'object') return null;
     const m = message as Record<string, unknown>;
     const role = m['role'];
     const text = m['text'];
-    if (role !== 'user' && role !== 'assistant') {
-      return null;
-    }
-    if (typeof text !== 'string' || !text.trim()) {
-      return null;
-    }
+    if (role !== 'user' && role !== 'assistant') return null;
+    if (typeof text !== 'string' || !text.trim()) return null;
     return { role, text: text.trim() };
   }
 }

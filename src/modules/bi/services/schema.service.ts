@@ -1,6 +1,6 @@
 import { Injectable, OnModuleDestroy, OnModuleInit } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
-import { Pool } from 'pg';
+import { sql } from 'kysely';
 import {
   createDbAdapter,
   testDbConnection,
@@ -8,9 +8,10 @@ import {
   type DbQueryResult,
   type DbType,
 } from '../../../common/db/db-adapter';
+import { AppDbService } from '../../../common/db/app-db.service';
 import { BiDataTablesService } from '../../../common/bi-tables/bi-data-tables.service';
 
-/** Requête de schéma PostgreSQL (information_schema standard + constraint_column_usage) */
+/** Requête de schéma PostgreSQL */
 const SCHEMA_SELECT_PG = `SELECT
     c.table_name,
     c.column_name,
@@ -37,7 +38,7 @@ ORDER BY
     c.table_name,
     c.ordinal_position`;
 
-/** Requête de schéma MySQL (KEY_COLUMN_USAGE + DATABASE() pour le schéma courant) */
+/** Requête de schéma MySQL */
 const SCHEMA_SELECT_MYSQL = `SELECT
     c.TABLE_NAME AS table_name,
     c.COLUMN_NAME AS column_name,
@@ -80,11 +81,9 @@ export type BddSchema = Record<
 
 @Injectable()
 export class SchemaService implements OnModuleInit, OnModuleDestroy {
-  private readonly appPool: Pool;
   private biAdapter: DbAdapter;
   private biAdapterIsShared: boolean;
 
-  /** Cache du JSON « Info BDD » (metadata) : évite une requête `information_schema` à chaque tour. */
   private bddJsonCache: {
     data: { bdd: { json: BddSchema } };
     expiresAt: number;
@@ -92,11 +91,10 @@ export class SchemaService implements OnModuleInit, OnModuleDestroy {
 
   constructor(
     private readonly config: ConfigService,
+    private readonly appDb: AppDbService,
     private readonly biTables: BiDataTablesService,
   ) {
-    const appUrl = this.config.getOrThrow<string>('DATABASE_URL');
-    this.appPool = new Pool({ connectionString: appUrl, max: 10 });
-    this.biAdapter = this.buildPgAdapterFromPool();
+    this.biAdapter = this.buildSharedAdapter();
     this.biAdapterIsShared = true;
   }
 
@@ -105,40 +103,30 @@ export class SchemaService implements OnModuleInit, OnModuleDestroy {
     await this.reloadBiAdapterFromSettings();
   }
 
-  onModuleDestroy() {
-    const closeApp = this.appPool.end();
-    if (this.biAdapterIsShared) {
-      return closeApp;
+  async onModuleDestroy() {
+    if (!this.biAdapterIsShared) {
+      await this.biAdapter.end();
     }
-    return Promise.all([closeApp, this.biAdapter.end()]).then(() => undefined);
   }
 
   async getBiConnectionSettings(): Promise<{
     connectionString: string | null;
     dbType: DbType;
   }> {
-    const r = await this.appPool.query<{
-      connection_string: string;
-      db_type: string;
-    }>(
-      `SELECT connection_string, db_type FROM public.bi_connection_settings WHERE id = true`,
-    );
-    const row = r.rows[0];
+    const row = await this.appDb.db
+      .selectFrom('bi_connection_settings')
+      .select(['connection_string', 'db_type'])
+      .where('id', '=', true)
+      .executeTakeFirst();
+
     if (!row) {
       return { connectionString: null, dbType: 'postgresql' };
     }
-    const dbType: DbType =
-      row.db_type === 'mysql' ? 'mysql' : 'postgresql';
+    const dbType: DbType = row.db_type === 'mysql' ? 'mysql' : 'postgresql';
     return {
-      connectionString: row.connection_string?.trim() || null,
+      connectionString: String(row.connection_string).trim() || null,
       dbType,
     };
-  }
-
-  /** @deprecated Use getBiConnectionSettings */
-  async getBiConnectionString(): Promise<string | null> {
-    const { connectionString } = await this.getBiConnectionSettings();
-    return connectionString;
   }
 
   async setBiConnection(
@@ -147,22 +135,30 @@ export class SchemaService implements OnModuleInit, OnModuleDestroy {
   ): Promise<void> {
     const s = connectionString.trim();
     if (!s) {
-      await this.appPool.query(
-        `DELETE FROM public.bi_connection_settings WHERE id = true`,
-      );
+      await this.appDb.db
+        .deleteFrom('bi_connection_settings')
+        .where('id', '=', true)
+        .execute();
       await this.reloadBiAdapterFromSettings();
       return;
     }
     await testDbConnection(dbType, s);
-    await this.appPool.query(
-      `INSERT INTO public.bi_connection_settings (id, connection_string, db_type, updated_at)
-       VALUES (true, $1, $2, now())
-       ON CONFLICT (id)
-       DO UPDATE SET connection_string = EXCLUDED.connection_string,
-                     db_type = EXCLUDED.db_type,
-                     updated_at = now()`,
-      [s, dbType],
-    );
+    await this.appDb.db
+      .insertInto('bi_connection_settings')
+      .values({
+        id: true,
+        connection_string: s,
+        db_type: dbType,
+        updated_at: sql`now()`,
+      })
+      .onConflict((oc) =>
+        oc.column('id').doUpdateSet({
+          connection_string: s,
+          db_type: dbType,
+          updated_at: sql`now()`,
+        }),
+      )
+      .execute();
     await this.reloadBiAdapterFromSettings();
   }
 
@@ -172,25 +168,7 @@ export class SchemaService implements OnModuleInit, OnModuleDestroy {
   }
 
   /**
-   * Base applicative (IAM, rôles, conversations, historique, …).
-   */
-  async executeAppQuery(
-    sql: string,
-    params?: unknown[],
-  ): Promise<DbQueryResult<Record<string, unknown>>> {
-    if (params && params.length > 0) {
-      const res = await this.appPool.query<Record<string, unknown>>(
-        sql,
-        params,
-      );
-      return { rows: res.rows, rowCount: res.rowCount };
-    }
-    const res = await this.appPool.query<Record<string, unknown>>(sql);
-    return { rows: res.rows, rowCount: res.rowCount };
-  }
-
-  /**
-   * Base analytique (tables BI configurées en base via admin, requêtes de l'agent).
+   * Base analytique (requêtes de l'agent BI).
    */
   async executeBiQuery(
     sql: string,
@@ -200,7 +178,7 @@ export class SchemaService implements OnModuleInit, OnModuleDestroy {
   }
 
   private async ensureBiConnectionTable(): Promise<void> {
-    await this.appPool.query(`
+    await this.appDb.executeDdl(`
       CREATE TABLE IF NOT EXISTS public.bi_connection_settings (
         id boolean PRIMARY KEY DEFAULT true,
         connection_string text NOT NULL,
@@ -209,7 +187,7 @@ export class SchemaService implements OnModuleInit, OnModuleDestroy {
         CONSTRAINT bi_connection_settings_singleton_chk CHECK (id = true)
       )
     `);
-    await this.appPool.query(`
+    await this.appDb.executeDdl(`
       ALTER TABLE public.bi_connection_settings
       ADD COLUMN IF NOT EXISTS db_type varchar(20) NOT NULL DEFAULT 'postgresql'
     `);
@@ -227,7 +205,7 @@ export class SchemaService implements OnModuleInit, OnModuleDestroy {
       if (!this.biAdapterIsShared) {
         await this.biAdapter.end();
       }
-      this.biAdapter = this.buildPgAdapterFromPool();
+      this.biAdapter = this.buildSharedAdapter();
       this.biAdapterIsShared = true;
       return;
     }
@@ -243,22 +221,18 @@ export class SchemaService implements OnModuleInit, OnModuleDestroy {
     this.biAdapterIsShared = false;
   }
 
-  /** Enveloppe le appPool dans un DbAdapter partagé (sans le fermer indépendamment). */
-  private buildPgAdapterFromPool(): DbAdapter {
-    const pool = this.appPool;
+  /** Adaptateur partagé qui passe par le pool de AppDbService (pg). */
+  private buildSharedAdapter(): DbAdapter {
+    const kyselyDb = this.appDb.db;
     return {
       query: async <T extends Record<string, unknown>>(
-        sql: string,
+        rawSql: string,
         params?: unknown[],
       ) => {
-        const res =
-          params && params.length > 0
-            ? await pool.query<T>(sql, params)
-            : await pool.query<T>(sql);
-        return { rows: res.rows, rowCount: res.rowCount };
+        return this.appDb.executeRaw<T>(rawSql, params);
       },
       end: async () => {
-        /* no-op : géré par appPool */
+        /* no-op : géré par AppDbService */
       },
     };
   }
@@ -275,10 +249,6 @@ export class SchemaService implements OnModuleInit, OnModuleDestroy {
     return tpl.replace('%IN%', inList);
   }
 
-  /**
-   * Reconstruit l'objet `bdd: { json: schema }`.
-   * Mis en cache mémoire selon `BDD_SCHEMA_CACHE_TTL_SECONDS` (0 = pas de cache).
-   */
   async getBddJson(): Promise<{ bdd: { json: BddSchema } }> {
     const ttlSec = this.parseTtlSeconds(
       this.config.get<string>('BDD_SCHEMA_CACHE_TTL_SECONDS'),
@@ -305,10 +275,7 @@ export class SchemaService implements OnModuleInit, OnModuleDestroy {
       bdd: { json: this.mapRowsToBdd(res.rows) },
     };
     if (ttlSec > 0) {
-      this.bddJsonCache = {
-        data,
-        expiresAt: Date.now() + ttlSec * 1000,
-      };
+      this.bddJsonCache = { data, expiresAt: Date.now() + ttlSec * 1000 };
     } else {
       this.bddJsonCache = null;
     }
@@ -316,14 +283,9 @@ export class SchemaService implements OnModuleInit, OnModuleDestroy {
   }
 
   private parseTtlSeconds(raw: string | undefined): number {
-    if (raw == null || String(raw).trim() === '') {
-      return 300;
-    }
+    if (raw == null || String(raw).trim() === '') return 300;
     const n = parseInt(String(raw), 10);
-    if (!Number.isFinite(n) || n < 0) {
-      return 300;
-    }
-    return n;
+    return !Number.isFinite(n) || n < 0 ? 300 : n;
   }
 
   private mapRowsToBdd(
@@ -341,16 +303,12 @@ export class SchemaService implements OnModuleInit, OnModuleDestroy {
     const schema: BddSchema = {};
     for (const col of input) {
       const table = col.table_name;
-      if (!schema[table]) {
-        schema[table] = { columns: {} };
-      }
+      if (!schema[table]) schema[table] = { columns: {} };
       const columnData: BddColumnMeta = {
         type: this.formatType(col),
         nullable: col.is_nullable === 'YES',
       };
-      if (col.constraint_type === 'PRIMARY KEY') {
-        columnData.pk = true;
-      }
+      if (col.constraint_type === 'PRIMARY KEY') columnData.pk = true;
       if (
         col.constraint_type === 'FOREIGN KEY' &&
         col.foreign_table_name &&

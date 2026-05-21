@@ -1,33 +1,27 @@
-import { Injectable, Logger, OnModuleDestroy, OnModuleInit } from '@nestjs/common';
-import { ConfigService } from '@nestjs/config';
-import { Pool } from 'pg';
+import { Injectable, Logger, OnModuleInit } from '@nestjs/common';
+import { sql } from 'kysely';
+import { AppDbService } from '../db/app-db.service';
 import { DEFAULT_BI_DATA_TABLES } from '../constants/bi-data-tables';
 
 const LOG = new Logger('BiDataTablesService');
 const RE_SAFE_NAME = /^[a-zA-Z_][a-zA-Z0-9_]*$/;
 
 /**
- * Registre des tables d’analyse BI (allowlist) : stocké en base
+ * Registre des tables d'analyse BI (allowlist) : stocké en base
  * dans `public.bi_allowed_tables`.
  */
 @Injectable()
-export class BiDataTablesService implements OnModuleInit, OnModuleDestroy {
-  private readonly appPool: Pool;
-  private tableNames: readonly string[] = Object.freeze([...DEFAULT_BI_DATA_TABLES]);
+export class BiDataTablesService implements OnModuleInit {
+  private tableNames: readonly string[] = Object.freeze([
+    ...DEFAULT_BI_DATA_TABLES,
+  ]);
 
-  constructor(private readonly config: ConfigService) {
-    const appUrl = this.config.getOrThrow<string>('DATABASE_URL');
-    this.appPool = new Pool({ connectionString: appUrl, max: 4 });
-  }
+  constructor(private readonly appDb: AppDbService) {}
 
   async onModuleInit() {
     await this.ensureStoreTable();
     await this.bootstrapFromFileIfEmpty();
     await this.reloadFromDb();
-  }
-
-  async onModuleDestroy() {
-    await this.appPool.end();
   }
 
   getAllTableNames(): readonly string[] {
@@ -47,29 +41,22 @@ export class BiDataTablesService implements OnModuleInit, OnModuleDestroy {
       throw new Error('La liste des tables BI ne peut pas être vide.');
     }
 
-    const client = await this.appPool.connect();
-    try {
-      await client.query('BEGIN');
-      await client.query(`DELETE FROM public.bi_allowed_tables`);
+    await this.appDb.db.transaction().execute(async (trx) => {
+      await trx.deleteFrom('bi_allowed_tables').execute();
       for (const t of unique) {
-        await client.query(
-          `INSERT INTO public.bi_allowed_tables (table_name) VALUES ($1)`,
-          [t],
-        );
+        await trx
+          .insertInto('bi_allowed_tables')
+          .values({ table_name: t })
+          .execute();
       }
-      await client.query('COMMIT');
-    } catch (e) {
-      await client.query('ROLLBACK');
-      throw e;
-    } finally {
-      client.release();
-    }
+    });
+
     await this.reloadFromDb();
     return this.tableNames;
   }
 
   private async ensureStoreTable(): Promise<void> {
-    await this.appPool.query(`
+    await this.appDb.executeDdl(`
       CREATE TABLE IF NOT EXISTS public.bi_allowed_tables (
         table_name varchar(255) PRIMARY KEY,
         created_at timestamptz NOT NULL DEFAULT now()
@@ -78,29 +65,36 @@ export class BiDataTablesService implements OnModuleInit, OnModuleDestroy {
   }
 
   private async bootstrapFromFileIfEmpty(): Promise<void> {
-    const c = await this.appPool.query<{ total: string }>(
-      `SELECT COUNT(*)::text AS total FROM public.bi_allowed_tables`,
-    );
-    const total = Number(c.rows[0]?.total ?? 0);
+    const result = await this.appDb.db
+      .selectFrom('bi_allowed_tables')
+      .select((eb) => eb.fn.countAll<string>().as('total'))
+      .executeTakeFirst();
+
+    const total = Number(result?.total ?? 0);
     if (total > 0) {
       return;
     }
     for (const t of DEFAULT_BI_DATA_TABLES) {
-      await this.appPool.query(
-        `INSERT INTO public.bi_allowed_tables (table_name) VALUES ($1) ON CONFLICT DO NOTHING`,
-        [t],
-      );
+      await this.appDb.db
+        .insertInto('bi_allowed_tables')
+        .values({ table_name: t })
+        .onConflict((oc) => oc.column('table_name').doNothing())
+        .execute();
     }
   }
 
   private async reloadFromDb(): Promise<void> {
     try {
-      const r = await this.appPool.query<{ table_name: string }>(
-        `SELECT table_name FROM public.bi_allowed_tables ORDER BY table_name ASC`,
-      );
-      const names = (r.rows ?? [])
+      const rows = await this.appDb.db
+        .selectFrom('bi_allowed_tables')
+        .select('table_name')
+        .orderBy('table_name', 'asc')
+        .execute();
+
+      const names = rows
         .map((x) => String(x.table_name).trim())
         .filter((x) => RE_SAFE_NAME.test(x));
+
       this.tableNames = Object.freeze(
         names.length > 0 ? names : [...DEFAULT_BI_DATA_TABLES],
       ) as readonly string[];
@@ -109,7 +103,9 @@ export class BiDataTablesService implements OnModuleInit, OnModuleDestroy {
         'Lecture bi_allowed_tables échouée (%s) — fallback',
         (e as Error).message,
       );
-      this.tableNames = Object.freeze([...DEFAULT_BI_DATA_TABLES]) as readonly string[];
+      this.tableNames = Object.freeze([
+        ...DEFAULT_BI_DATA_TABLES,
+      ]) as readonly string[];
     }
   }
 }

@@ -5,6 +5,7 @@ import {
   Logger,
 } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
+import { AppDbService } from '../../../common/db/app-db.service';
 import {
   AIMessage,
   BaseMessage,
@@ -80,6 +81,7 @@ export class BiAgentService {
 
   constructor(
     private readonly config: ConfigService,
+    private readonly appDb: AppDbService,
     private readonly schema: SchemaService,
     private readonly biTables: BiDataTablesService,
     private readonly prompts: BiPromptService,
@@ -135,12 +137,11 @@ export class BiAgentService {
       | { provider?: string; model?: string; apiKey?: string | null }
       | undefined;
     try {
-      const r = await this.schema.executeAppQuery(
-        `SELECT provider, model, api_key AS "apiKey"
-         FROM public.bi_llm_settings
-         WHERE id = true`,
-      );
-      row = r.rows[0] as
+      row = await this.appDb.db
+        .selectFrom('bi_llm_settings')
+        .select(['provider', 'model', 'api_key as apiKey'])
+        .where('id', '=', true)
+        .executeTakeFirst() as
         | { provider?: string; model?: string; apiKey?: string | null }
         | undefined;
     } catch {

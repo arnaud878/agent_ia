@@ -7,12 +7,11 @@ import { ConfigService } from '@nestjs/config';
 import { mkdir, readFile, rm, unlink, writeFile } from 'node:fs/promises';
 import { basename, extname, join, resolve } from 'node:path';
 import { randomUUID } from 'node:crypto';
-import type { QueryResult } from 'pg';
 import { GoogleGenerativeAIEmbeddings } from '@langchain/google-genai';
 import { OpenAIEmbeddings } from '@langchain/openai';
 import { PDFParse } from 'pdf-parse';
 import mammoth from 'mammoth';
-import { SchemaService } from '../bi/services/schema.service';
+import { AppDbService } from '../../common/db/app-db.service';
 
 const UPLOAD_DIR = resolve(process.cwd(), 'storage/uploads');
 const MAX_FILE_SIZE_BYTES = 20 * 1024 * 1024;
@@ -93,12 +92,12 @@ export type ConversationAttachmentRow = {
 @Injectable()
 export class ConversationAttachmentsService {
   constructor(
-    private readonly schema: SchemaService,
+    private readonly appDb: AppDbService,
     private readonly config: ConfigService,
   ) {}
 
   private async ensureStoreTable(): Promise<void> {
-    await this.schema.executeAppQuery(`
+    await this.appDb.executeRaw(`
       CREATE TABLE IF NOT EXISTS public.bi_conversation_attachments (
         id uuid PRIMARY KEY,
         conversation_id uuid NOT NULL REFERENCES public.bi_conversations(id) ON DELETE CASCADE,
@@ -111,7 +110,7 @@ export class ConversationAttachmentsService {
         created_at timestamptz NOT NULL DEFAULT now()
       )
     `);
-    await this.schema.executeAppQuery(`
+    await this.appDb.executeRaw(`
       CREATE TABLE IF NOT EXISTS public.bi_conversation_attachment_chunks (
         id uuid PRIMARY KEY,
         attachment_id uuid NOT NULL REFERENCES public.bi_conversation_attachments(id) ON DELETE CASCADE,
@@ -225,7 +224,7 @@ export class ConversationAttachmentsService {
     userId: string,
     conversationId: string,
   ): Promise<void> {
-    const q = await this.schema.executeAppQuery(
+    const q = await this.appDb.executeRaw(
       `SELECT 1
        FROM public.bi_conversations
        WHERE id = $1 AND user_id = $2`,
@@ -317,7 +316,7 @@ export class ConversationAttachmentsService {
     let provider: 'gemini' | 'gpt' | 'claude' = 'gemini';
     let dbApiKey = '';
     try {
-      const r = await this.schema.executeAppQuery(
+      const r = await this.appDb.executeRaw(
         `SELECT provider, api_key AS "apiKey"
          FROM public.bi_llm_settings
          WHERE id = true`,
@@ -398,7 +397,7 @@ export class ConversationAttachmentsService {
   ): Promise<ConversationAttachmentRow[]> {
     await this.ensureStoreTable();
     await this.ensureConversationOwner(userId, conversationId);
-    const r = (await this.schema.executeAppQuery(
+    const r = await this.appDb.executeRaw<ConversationAttachmentRow>(
       `SELECT
          id,
          conversation_id AS "conversationId",
@@ -410,7 +409,7 @@ export class ConversationAttachmentsService {
        WHERE conversation_id = $1 AND user_id = $2
        ORDER BY created_at DESC`,
       [conversationId, userId],
-    )) as QueryResult<ConversationAttachmentRow>;
+    );
     return r.rows ?? [];
   }
 
@@ -461,7 +460,7 @@ export class ConversationAttachmentsService {
       file.buffer,
     );
 
-    const ins = (await this.schema.executeAppQuery(
+    const ins = await this.appDb.executeRaw<ConversationAttachmentRow>(
       `INSERT INTO public.bi_conversation_attachments
          (id, conversation_id, user_id, file_name, mime_type, size_bytes, storage_path, extracted_text)
        VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
@@ -482,13 +481,13 @@ export class ConversationAttachmentsService {
         filePath,
         extractedText,
       ],
-    )) as QueryResult<ConversationAttachmentRow>;
+    );
     if (extractedText && extractedText.trim().length > 0) {
       const chunks = this.buildChunks(extractedText);
       const vectors = await this.embedTexts(chunks);
       const canUseVectors = vectors.length === chunks.length && vectors.length > 0;
       for (let i = 0; i < chunks.length; i++) {
-        await this.schema.executeAppQuery(
+        await this.appDb.executeRaw(
           `INSERT INTO public.bi_conversation_attachment_chunks
              (id, attachment_id, chunk_index, content, embedding)
            VALUES ($1, $2, $3, $4, $5::jsonb)`,
@@ -514,7 +513,7 @@ export class ConversationAttachmentsService {
   ): Promise<void> {
     await this.ensureStoreTable();
     await this.ensureConversationOwner(userId, conversationId);
-    const sel = await this.schema.executeAppQuery(
+    const sel = await this.appDb.executeRaw(
       `SELECT storage_path AS "storagePath"
        FROM public.bi_conversation_attachments
        WHERE id = $1 AND conversation_id = $2 AND user_id = $3`,
@@ -524,7 +523,7 @@ export class ConversationAttachmentsService {
     if (!row) {
       throw new NotFoundException('Pièce jointe introuvable.');
     }
-    await this.schema.executeAppQuery(
+    await this.appDb.executeRaw(
       `DELETE FROM public.bi_conversation_attachments
        WHERE id = $1 AND conversation_id = $2 AND user_id = $3`,
       [attachmentId, conversationId, userId],
@@ -534,7 +533,7 @@ export class ConversationAttachmentsService {
 
   async purgeFilesForConversation(conversationId: string): Promise<void> {
     await this.ensureStoreTable();
-    const rows = await this.schema.executeAppQuery(
+    const rows = await this.appDb.executeRaw(
       `SELECT storage_path AS "storagePath"
        FROM public.bi_conversation_attachments
        WHERE conversation_id = $1`,
@@ -560,24 +559,24 @@ export class ConversationAttachmentsService {
     if (ids.length === 0) {
       return null;
     }
-    const attachments = (await this.schema.executeAppQuery(
-      `SELECT id, file_name AS "fileName", mime_type AS "mimeType", storage_path AS "storagePath", extracted_text AS "extractedText"
-       FROM public.bi_conversation_attachments
-       WHERE conversation_id = $1 AND user_id = $2 AND id = ANY($3::uuid[])`,
-      [input.conversationId, input.userId, ids],
-    )) as QueryResult<{
+    const attachments = await this.appDb.executeRaw<{
       id: string;
       fileName: string;
       mimeType: string;
       storagePath: string;
       extractedText: string | null;
-    }>;
+    }>(
+      `SELECT id, file_name AS "fileName", mime_type AS "mimeType", storage_path AS "storagePath", extracted_text AS "extractedText"
+       FROM public.bi_conversation_attachments
+       WHERE conversation_id = $1 AND user_id = $2 AND id = ANY($3::uuid[])`,
+      [input.conversationId, input.userId, ids],
+    );
     if (!attachments.rows.length) {
       return null;
     }
 
     for (const a of attachments.rows) {
-      const hasChunks = await this.schema.executeAppQuery(
+      const hasChunks = await this.appDb.executeRaw(
         `SELECT 1 FROM public.bi_conversation_attachment_chunks WHERE attachment_id = $1 LIMIT 1`,
         [a.id],
       );
@@ -599,7 +598,7 @@ export class ConversationAttachmentsService {
         if (!text || !text.trim()) {
           continue;
         }
-        await this.schema.executeAppQuery(
+        await this.appDb.executeRaw(
           `UPDATE public.bi_conversation_attachments
            SET mime_type = $2, extracted_text = $3
            WHERE id = $1`,
@@ -609,7 +608,7 @@ export class ConversationAttachmentsService {
         const vectors = await this.embedTexts(chunks);
         const canUseVectors = vectors.length === chunks.length && vectors.length > 0;
         for (let i = 0; i < chunks.length; i++) {
-          await this.schema.executeAppQuery(
+          await this.appDb.executeRaw(
             `INSERT INTO public.bi_conversation_attachment_chunks
                (id, attachment_id, chunk_index, content, embedding)
              VALUES ($1, $2, $3, $4, $5::jsonb)`,
@@ -629,19 +628,19 @@ export class ConversationAttachmentsService {
       }
     }
 
-    const q = (await this.schema.executeAppQuery(
-      `SELECT a.id, a.file_name AS "fileName", c.id AS "chunkId", c.content, c.embedding
-       FROM public.bi_conversation_attachments a
-       JOIN public.bi_conversation_attachment_chunks c ON c.attachment_id = a.id
-       WHERE a.conversation_id = $1 AND a.user_id = $2 AND a.id = ANY($3::uuid[])`,
-      [input.conversationId, input.userId, ids],
-    )) as QueryResult<{
+    const q = await this.appDb.executeRaw<{
       id: string;
       fileName: string;
       chunkId: string;
       content: string;
       embedding: number[] | string;
-    }>;
+    }>(
+      `SELECT a.id, a.file_name AS "fileName", c.id AS "chunkId", c.content, c.embedding
+       FROM public.bi_conversation_attachments a
+       JOIN public.bi_conversation_attachment_chunks c ON c.attachment_id = a.id
+       WHERE a.conversation_id = $1 AND a.user_id = $2 AND a.id = ANY($3::uuid[])`,
+      [input.conversationId, input.userId, ids],
+    );
     const contextHeader = [
       'Contexte des pièces jointes sélectionnées :',
       ...attachments.rows.map(
@@ -679,7 +678,7 @@ export class ConversationAttachmentsService {
             : (row.embedding as number[]);
         if (!Array.isArray(emb) || emb.length === 0) {
           emb = this.localEmbeddingVector(row.content);
-          void this.schema.executeAppQuery(
+          void this.appDb.executeRaw(
             `UPDATE public.bi_conversation_attachment_chunks
              SET embedding = $2::jsonb
              WHERE id = $1`,
