@@ -3,10 +3,14 @@ import { Parser } from 'expr-eval';
 import { z } from 'zod';
 import { BiDataTablesService } from '../../../common/bi-tables/bi-data-tables.service';
 import { assertSelectSqlUsesOnlyAllowedTables } from '../../../common/lib/sql-table-allow';
+import type { DbType } from '../../../common/db/db-adapter';
 import type { DataAccess } from '../../../common/types/data-access';
 import type { SchemaService } from '../services/schema.service';
 
-function ensureSelectReadOnly(sql: string): { sql: string; warning?: string } {
+function ensureSelectReadOnly(
+  sql: string,
+  dbType: DbType,
+): { sql: string; warning?: string } {
   const trimmed = sql.trim();
   if (!/^\s*(with|select)\b/is.test(trimmed)) {
     throw new Error(
@@ -30,6 +34,15 @@ function ensureSelectReadOnly(sql: string): { sql: string; warning?: string } {
     }
   }
   const withoutSemi = trimmed.replace(/;+\s*$/g, '');
+  if (dbType === 'mssql') {
+    if (!/\bTOP\s+\d+\b/i.test(withoutSemi) && !/\bLIMIT\s+\d+\b/i.test(withoutSemi)) {
+      return {
+        sql: withoutSemi.replace(/^\s*select\b/i, 'SELECT TOP 500'),
+        warning: 'TOP 500 appliqué automatiquement.',
+      };
+    }
+    return { sql: withoutSemi };
+  }
   if (!/\blimit\s+\d+\b/i.test(withoutSemi)) {
     return {
       sql: `${withoutSemi} LIMIT 500`,
@@ -84,8 +97,9 @@ export function buildBiTools(
           'Aucune table n’est autorisée pour ce compte. Contactez un administrateur.',
         );
       }
-      const { sql, warning } = ensureSelectReadOnly(input.sql_query);
-      assertSelectSqlUsesOnlyAllowedTables(sql, allow);
+      const { dbType } = await schemaService.getBiConnectionSettings();
+      const { sql, warning } = ensureSelectReadOnly(input.sql_query, dbType);
+      assertSelectSqlUsesOnlyAllowedTables(sql, allow, dbType);
       const res = await schemaService.executeBiQuery(sql);
       const text = JSON.stringify(
         { rows: res.rows, rowCount: res.rowCount, warning: warning ?? null },
@@ -100,7 +114,7 @@ export function buildBiTools(
     {
       name: 'SQLExecutor',
       description:
-        "Exécute une requête SQL en lecture seule sur PostgreSQL. Passe l'argument 'sql_query'.",
+        "Exécute une requête SQL en lecture seule (SELECT) sur la base BI connectée. Passe l'argument 'sql_query'.",
       schema: z.object({
         sql_query: z.string().describe('Requête SQL SELECT (schéma validé)'),
       }),

@@ -341,7 +341,7 @@ export class IamService implements OnModuleInit {
 
   async getBiConnection(): Promise<{
     connectionString: string;
-    dbType: 'postgresql' | 'mysql';
+    dbType: 'postgresql' | 'mysql' | 'mssql';
   }> {
     const { connectionString, dbType } =
       await this.schema.getBiConnectionSettings();
@@ -350,7 +350,7 @@ export class IamService implements OnModuleInit {
 
   async setBiConnection(
     connectionString: string,
-    dbType: 'postgresql' | 'mysql' = 'postgresql',
+    dbType: 'postgresql' | 'mysql' | 'mssql' = 'postgresql',
   ): Promise<{ ok: true }> {
     try {
       await this.schema.setBiConnection(connectionString, dbType);

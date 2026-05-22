@@ -3,6 +3,7 @@ import { ConfigService } from '@nestjs/config';
 import { sql } from 'kysely';
 import {
   createDbAdapter,
+  parseStoredDbType,
   testDbConnection,
   type DbAdapter,
   type DbQueryResult,
@@ -67,6 +68,37 @@ ORDER BY
     c.TABLE_NAME,
     c.ORDINAL_POSITION`;
 
+/** Requête de schéma Microsoft SQL Server */
+const SCHEMA_SELECT_MSSQL = `SELECT
+    c.TABLE_NAME AS table_name,
+    c.COLUMN_NAME AS column_name,
+    c.DATA_TYPE AS data_type,
+    c.CHARACTER_MAXIMUM_LENGTH AS character_maximum_length,
+    c.IS_NULLABLE AS is_nullable,
+    c.COLUMN_DEFAULT AS column_default,
+    tc.CONSTRAINT_TYPE AS constraint_type,
+    tc.CONSTRAINT_NAME AS constraint_name,
+    ccu.TABLE_NAME AS foreign_table_name,
+    ccu.COLUMN_NAME AS foreign_column_name
+FROM
+    INFORMATION_SCHEMA.COLUMNS AS c
+    LEFT JOIN INFORMATION_SCHEMA.KEY_COLUMN_USAGE AS kcu
+        ON c.TABLE_NAME = kcu.TABLE_NAME
+        AND c.COLUMN_NAME = kcu.COLUMN_NAME
+        AND c.TABLE_SCHEMA = kcu.TABLE_SCHEMA
+    LEFT JOIN INFORMATION_SCHEMA.TABLE_CONSTRAINTS AS tc
+        ON kcu.CONSTRAINT_NAME = tc.CONSTRAINT_NAME
+        AND kcu.TABLE_SCHEMA = tc.TABLE_SCHEMA
+    LEFT JOIN INFORMATION_SCHEMA.CONSTRAINT_COLUMN_USAGE AS ccu
+        ON tc.CONSTRAINT_NAME = ccu.CONSTRAINT_NAME
+        AND tc.TABLE_SCHEMA = ccu.TABLE_SCHEMA
+WHERE
+    c.TABLE_NAME IN (%IN%)
+    AND c.TABLE_SCHEMA = SCHEMA_NAME()
+ORDER BY
+    c.TABLE_NAME,
+    c.ORDINAL_POSITION`;
+
 export type BddColumnMeta = {
   type: string;
   nullable: boolean;
@@ -122,7 +154,7 @@ export class SchemaService implements OnModuleInit, OnModuleDestroy {
     if (!row) {
       return { connectionString: null, dbType: 'postgresql' };
     }
-    const dbType: DbType = row.db_type === 'mysql' ? 'mysql' : 'postgresql';
+    const dbType: DbType = parseStoredDbType(row.db_type);
     return {
       connectionString: String(row.connection_string).trim() || null,
       dbType,
@@ -169,7 +201,7 @@ export class SchemaService implements OnModuleInit, OnModuleDestroy {
 
   /**
    * Retourne tous les noms de tables (BASE TABLE) de la base BI connectée.
-   * Compatible PostgreSQL et MySQL.
+   * Compatible PostgreSQL, MySQL et Microsoft SQL Server.
    */
   async getAvailableTableNames(): Promise<string[]> {
     const { dbType } = await this.getBiConnectionSettings();
@@ -178,6 +210,12 @@ export class SchemaService implements OnModuleInit, OnModuleDestroy {
       query = `SELECT TABLE_NAME AS table_name
                FROM information_schema.TABLES
                WHERE TABLE_SCHEMA = DATABASE()
+                 AND TABLE_TYPE = 'BASE TABLE'
+               ORDER BY TABLE_NAME`;
+    } else if (dbType === 'mssql') {
+      query = `SELECT TABLE_NAME AS table_name
+               FROM INFORMATION_SCHEMA.TABLES
+               WHERE TABLE_SCHEMA = SCHEMA_NAME()
                  AND TABLE_TYPE = 'BASE TABLE'
                ORDER BY TABLE_NAME`;
     } else {
@@ -271,7 +309,12 @@ export class SchemaService implements OnModuleInit, OnModuleDestroy {
       throw new Error('Aucune table BI valide configurée.');
     }
     const inList = list.map((t) => `'${t.replace(/'/g, "''")}'`).join(', ');
-    const tpl = dbType === 'mysql' ? SCHEMA_SELECT_MYSQL : SCHEMA_SELECT_PG;
+    const tpl =
+      dbType === 'mysql'
+        ? SCHEMA_SELECT_MYSQL
+        : dbType === 'mssql'
+          ? SCHEMA_SELECT_MSSQL
+          : SCHEMA_SELECT_PG;
     return tpl.replace('%IN%', inList);
   }
 
@@ -352,10 +395,12 @@ export class SchemaService implements OnModuleInit, OnModuleDestroy {
     character_maximum_length: number | null;
   }): string {
     if (
-      col.data_type === 'character varying' &&
+      (col.data_type === 'character varying' ||
+        col.data_type === 'varchar' ||
+        col.data_type === 'nvarchar') &&
       col.character_maximum_length != null
     ) {
-      return `varchar(${col.character_maximum_length})`;
+      return `${col.data_type}(${col.character_maximum_length})`;
     }
     return col.data_type;
   }

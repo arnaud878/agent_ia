@@ -1,18 +1,29 @@
 import { Parser } from 'node-sql-parser';
+import type { DbType } from '../db/db-adapter';
 
 const parser = new Parser();
 
+function parserDialect(dbType: DbType): string {
+  if (dbType === 'mysql') {
+    return 'MySQL';
+  }
+  if (dbType === 'mssql') {
+    return 'Transactsql';
+  }
+  return 'Postgresql';
+}
+
 /**
  * Vérifie que toutes les tables visitées par le SELECT sont dans `allowed`.
- * Basé sur `node-sql-parser` (PostgreSQL).
  */
 export function assertSelectSqlUsesOnlyAllowedTables(
   sql: string,
   allowed: Set<string>,
+  dbType: DbType = 'postgresql',
 ): void {
   let list: string[];
   try {
-    list = parser.tableList(sql, { database: 'Postgresql' });
+    list = parser.tableList(sql, { database: parserDialect(dbType) });
   } catch {
     throw new Error('Requête SQL non analysable (syntaxe ou dialecte).');
   }

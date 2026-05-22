@@ -8,6 +8,6 @@ export class SetBiConnectionDto {
 
   @IsOptional()
   @IsString()
-  @IsIn(['postgresql', 'mysql'])
+  @IsIn(['postgresql', 'mysql', 'mssql'])
   dbType?: DbType;
 }
