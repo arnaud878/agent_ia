@@ -22,7 +22,7 @@ export function extractToolCallName(tc: unknown): string {
  */
 export function classifyToolName(
   name: string,
-): 'sql' | 'think' | 'calc' | 'unknown' {
+): 'sql' | 'think' | 'calc' | 'forecast' | 'unknown' {
   const s = (name || '').toLowerCase().replace(/[\s_-]/g, '');
   if (s.includes('sql') || s.includes('sqlexecutor')) {
     return 'sql';
@@ -33,7 +33,20 @@ export function classifyToolName(
   if (s.includes('calculator') || s === 'calc' || s.includes('calculat')) {
     return 'calc';
   }
+  if (s.includes('forecast')) {
+    return 'forecast';
+  }
   return 'unknown';
+}
+
+function looksLikeForecastResultPayload(text: string): boolean {
+  const t = text.trim();
+  return (
+    t.startsWith('{') &&
+    t.includes('"forecast"') &&
+    t.includes('"dates"') &&
+    t.includes('"methodology"')
+  );
 }
 
 function looksLikeSqlResultPayload(text: string): boolean {
@@ -57,6 +70,9 @@ export function inferToolNameFromMessage(m: ToolMessage): string {
   if (looksLikeSqlResultPayload(text)) {
     return 'SQLExecutor';
   }
+  if (looksLikeForecastResultPayload(text)) {
+    return 'Forecast';
+  }
   return 'unknown';
 }
 
@@ -72,9 +88,22 @@ export function humanizeToolCallBatch(
   const hasSql = kinds.has('sql');
   const hasThink = kinds.has('think');
   const hasCalc = kinds.has('calc');
+  const hasForecast = kinds.has('forecast');
   let nextSql = sqlIntentCount;
   if (hasSql) {
     nextSql += 1;
+  }
+  if (hasForecast && hasSql) {
+    return {
+      line: 'Historique SQL puis API de prévision (30–90 s, une fois)…',
+      nextSql: hasSql ? nextSql : sqlIntentCount,
+    };
+  }
+  if (hasForecast) {
+    return {
+      line: 'Appel API de prévision (agrégation automatique si besoin)…',
+      nextSql,
+    };
   }
   if (hasSql && hasThink && hasCalc) {
     return {
@@ -132,8 +161,12 @@ export function humanizeToolResult(
   content: string,
 ): string | null {
   const k = classifyToolName(toolName);
-  const effective: 'sql' | 'think' | 'calc' | 'unknown' =
-    k === 'unknown' && looksLikeSqlResultPayload(content) ? 'sql' : k;
+  let effective: 'sql' | 'think' | 'calc' | 'forecast' | 'unknown' = k;
+  if (k === 'unknown' && looksLikeSqlResultPayload(content)) {
+    effective = 'sql';
+  } else if (k === 'unknown' && looksLikeForecastResultPayload(content)) {
+    effective = 'forecast';
+  }
   if (effective === 'sql') {
     try {
       const j = JSON.parse(content) as { rowCount?: number };
@@ -161,5 +194,31 @@ export function humanizeToolResult(
   if (effective === 'calc') {
     return 'Calculs mis à jour pour la suite du raisonnement…';
   }
+  if (effective === 'forecast') {
+    try {
+      const j = JSON.parse(content) as {
+        horizon?: number;
+        model_requested?: string;
+        forecast?: number[];
+      };
+      const n = Array.isArray(j.forecast) ? j.forecast.length : null;
+      const model = j.model_requested ? ` (${j.model_requested})` : '';
+      if (n !== null && n > 0) {
+        return `Prévision calculée${model} : ${n} période(s) intégrée(s) à l’analyse.`;
+      }
+    } catch {
+      /* ignore */
+    }
+    return 'Prévision calculée et intégrée à l’analyse…';
+  }
   return 'Étape prise en compte pour la suite…';
+}
+
+/** Libellé phase 2 (construction HTML) affiché dans le journal d’étapes du stream. */
+export function htmlRenderPhaseStatusLine(
+  responseMode: 'quick' | 'pro',
+): string {
+  return responseMode === 'quick'
+    ? 'Construction du rapport HTML (phase 2, mode rapide)…'
+    : 'Construction du rapport HTML (phase 2, graphiques & tableaux)…';
 }

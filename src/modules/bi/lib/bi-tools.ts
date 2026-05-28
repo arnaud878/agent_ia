@@ -6,6 +6,11 @@ import { assertSelectSqlUsesOnlyAllowedTables } from '../../../common/lib/sql-ta
 import type { DbType } from '../../../common/db/db-adapter';
 import type { DataAccess } from '../../../common/types/data-access';
 import type { SchemaService } from '../services/schema.service';
+import {
+  callForecastApi,
+  normalizeForecastApiUrl,
+  parseForecastRequestJson,
+} from './forecast-api.client';
 
 function ensureSelectReadOnly(
   sql: string,
@@ -81,6 +86,11 @@ function allowedTableSetForAccess(
   );
 }
 
+export type BuildBiToolsOptions = {
+  /** URL POST de l’API Forecast (défaut : service Render public). */
+  forecastApiUrl?: string;
+};
+
 /**
  * Outils n8n; `dataAccess` restreint les tables SQL et le schéma injecté côté agent.
  */
@@ -88,7 +98,9 @@ export function buildBiTools(
   schemaService: SchemaService,
   dataAccess: DataAccess,
   biTables: BiDataTablesService,
+  options?: BuildBiToolsOptions,
 ) {
+  const forecastApiUrl = normalizeForecastApiUrl(options?.forecastApiUrl);
   const allow = allowedTableSetForAccess(dataAccess, biTables);
   const sqlExecutor = tool(
     async (input: { sql_query: string }) => {
@@ -147,5 +159,40 @@ export function buildBiTools(
     },
   );
 
-  return [sqlExecutor, think, calculator] as const;
+  const forecast = tool(
+    async (input: { request_json: string }) => {
+      try {
+        const req = parseForecastRequestJson(input.request_json);
+        const res = await callForecastApi(forecastApiUrl, req);
+        const text = JSON.stringify(res, null, 2);
+        if (text.length > 200_000) {
+          return text.slice(0, 200_000) + '…(tronqué)';
+        }
+        return text;
+      } catch (e) {
+        const msg = (e as Error).message;
+        return (
+          `Error: ${msg}\n` +
+          'Consigne : en SQL, GROUP BY période (date/mois) avec SUM(valeur), alias date + value, 24–60 lignes max — pas 500 lignes détail. ' +
+          'Puis un seul nouvel appel Forecast avec request_json corrigé (ne pas boucler indéfiniment).'
+        );
+      }
+    },
+    {
+      name: 'Forecast',
+      description:
+        "Appel API Forecast (équivalent n8n Forecasting_API). Corps JSON complet dans request_json. " +
+        'Workflow : 1) SQL agrégé (GROUP BY période, SUM) → 2) request_json = {"data":[{date,value},...],"horizon":N,"frequency":"M|D|W|Y","model":"prophet|arima|auto","date_column":"date","value_column":"value"}. ' +
+        'Le serveur agrège/nettoie si trop de lignes. Ne pas inventer de prévisions.',
+      schema: z.object({
+        request_json: z
+          .string()
+          .describe(
+            'Objet JSON stringifié : data (tableau), horizon, frequency, model, date_column, value_column (format identique n8n)',
+          ),
+      }),
+    },
+  );
+
+  return [sqlExecutor, think, calculator, forecast] as const;
 }

@@ -27,6 +27,7 @@ import {
   biHtmlRenderOutputSchema,
 } from '../schemas/bi-output.schema';
 import { buildTrivialShortReply } from '../lib/trivial-short-reply';
+import { sanitizeAnalysisPayload } from '../lib/bi-analysis-sanitize';
 import { extractFirstJsonObject } from '../lib/extract-json-object';
 import {
   inferReplyLocaleFromText,
@@ -41,10 +42,12 @@ import {
 } from '../lib/message-intent-classifier';
 import {
   extractToolCallName,
+  htmlRenderPhaseStatusLine,
   humanizeToolCallBatch,
   humanizeToolResult,
   inferToolNameFromMessage,
 } from '../lib/bi-stream-status';
+import { buildDynamicReportHtml } from '../lib/report-html.builder';
 import {
   isLikelyUserPromptInjection,
   USER_MESSAGE_BLOCKED,
@@ -193,7 +196,7 @@ export class BiAgentService {
     if (settings.provider === 'gpt') {
       return new ChatOpenAI({
         model: settings.model,
-        temperature: 0.15,
+        temperature: 0.25,
         maxTokens: cap,
         apiKey: settings.apiKey,
       });
@@ -201,14 +204,14 @@ export class BiAgentService {
     if (settings.provider === 'claude') {
       return new ChatAnthropic({
         model: settings.model,
-        temperature: 0.15,
+        temperature: 0.25,
         maxTokens: cap,
         apiKey: settings.apiKey,
       });
     }
     return new ChatGoogleGenerativeAI({
       model: settings.model,
-      temperature: 0.15,
+      temperature: 0.25,
       apiKey: settings.apiKey,
       maxOutputTokens: cap,
     });
@@ -245,6 +248,30 @@ export class BiAgentService {
    */
   private async runHtmlRenderPhase(
     analysis: BiAnalysisOutput,
+    _settings: RuntimeLlmSettings,
+    responseMode: BiResponseMode,
+    replyLocale: ReplyLocale,
+  ): Promise<BiHtmlRenderOutput> {
+    const useLlm =
+      String(this.config.get<string>('BI_HTML_RENDER_USE_LLM') ?? '')
+        .trim()
+        .toLowerCase() === 'true';
+    if (useLlm) {
+      return this.runHtmlRenderPhaseWithLlm(
+        analysis,
+        _settings,
+        responseMode,
+        replyLocale,
+      );
+    }
+    return {
+      html: buildDynamicReportHtml(analysis, responseMode, replyLocale),
+    };
+  }
+
+  /** Rendu LLM optionnel (BI_HTML_RENDER_USE_LLM=true). Par défaut : gabarit déterministe. */
+  private async runHtmlRenderPhaseWithLlm(
+    analysis: BiAnalysisOutput,
     settings: RuntimeLlmSettings,
     responseMode: BiResponseMode,
     replyLocale: ReplyLocale,
@@ -272,7 +299,7 @@ export class BiAgentService {
         new HumanMessage(human),
       ]);
     } catch (e) {
-      this.log.warn(`Phase 2 structuredOutput échec, repli JSON brut: ${e}`);
+      this.log.warn(`Phase 2 structuredOutput échec, repli gabarit: ${e}`);
       return this.invokeHtmlRendererPlainJson(model, system, human, analysis);
     }
   }
@@ -300,77 +327,39 @@ export class BiAgentService {
     } catch (e) {
       this.log.warn(`invokeHtmlRendererPlainJson: ${e}`);
     }
-    return { html: this.fallbackHtmlFromAnalysis(analysis) };
+    return {
+      html: buildDynamicReportHtml(analysis, 'pro', 'fr'),
+    };
   }
 
   private fallbackHtmlFromAnalysis(a: BiAnalysisOutput): string {
-    const esc = (s: string) =>
-      s
-        .replace(/&/g, '&amp;')
-        .replace(/</g, '&lt;')
-        .replace(/>/g, '&gt;');
-    const rs = a.reportSections;
-    const parts: string[] = [
-      `<div style="font-family:system-ui,sans-serif;max-width:42rem;padding:1rem;border-radius:8px;border:1px solid #444;color:#e5e7eb;background:#111827;line-height:1.5">`,
-      `<p style="margin:0 0 0.5rem 0;font-size:0.75rem;opacity:0.85">Rendu HTML simplifié (repli)</p>`,
-      `<h2 style="margin:0 0 0.5rem 0;font-size:1.1rem">${esc(rs.title)}</h2>`,
-      `<p style="margin:0 0 1rem 0;white-space:pre-wrap">${esc(rs.keyInsights)}</p>`,
-    ];
-    if (rs.executedAtLabel) {
-      parts.push(
-        `<p style="margin:0 0 0.75rem 0;font-size:0.85rem;opacity:0.9">${esc(rs.executedAtLabel)}</p>`,
+    return buildDynamicReportHtml(a, 'pro', 'fr');
+  }
+
+  private finalizeAnalysisOutput(
+    raw: BiAnalysisOutput | undefined,
+  ): BiAnalysisOutput | undefined {
+    if (!raw) {
+      return undefined;
+    }
+    const sanitized = sanitizeAnalysisPayload(raw);
+    const parsed = biAnalysisOutputSchema.safeParse(sanitized);
+    return parsed.success ? parsed.data : undefined;
+  }
+
+  private parseAnalysisFromModelText(text: string): BiAnalysisOutput | null {
+    if (!text || text.length < 12) {
+      return null;
+    }
+    try {
+      const obj = extractFirstJsonObject(text);
+      const parsed = biAnalysisOutputSchema.safeParse(
+        sanitizeAnalysisPayload(obj),
       );
+      return parsed.success ? parsed.data : null;
+    } catch {
+      return null;
     }
-    if (rs.tableHeaders?.length && rs.tableRows?.length) {
-      const th = rs.tableHeaders.map((h) => `<th style="text-align:left;padding:4px 8px;border-bottom:1px solid #555">${esc(String(h))}</th>`).join('');
-      const trs = rs.tableRows
-        .map((row) => {
-          const tds = row
-            .map((cell) => `<td style="padding:4px 8px;border-bottom:1px solid #333">${esc(String(cell))}</td>`)
-            .join('');
-          return `<tr>${tds}</tr>`;
-        })
-        .join('');
-      parts.push(`<table style="width:100%;border-collapse:collapse;margin-bottom:1rem"><thead><tr>${th}</tr></thead><tbody>${trs}</tbody></table>`);
-    }
-    if (rs.chart && rs.chart.labels.length > 0) {
-      parts.push(
-        `<pre style="white-space:pre-wrap;font-size:0.8rem;opacity:0.9;margin-bottom:1rem">${esc(JSON.stringify({ chart: rs.chart }, null, 2))}</pre>`,
-      );
-    }
-    const operational = rs.operationalActions ?? [];
-    if (operational.length > 0) {
-      const lis = operational.map((r) => `<li>${esc(r)}</li>`).join('');
-      parts.push(
-        `<h3 style="margin:0.75rem 0 0.35rem 0;font-size:0.95rem;color:#4e79a7">Actions opérationnelles</h3><ul style="margin:0;padding-left:1.25rem">${lis}</ul>`,
-      );
-    }
-    const commercial = rs.commercialActions ?? [];
-    if (commercial.length > 0) {
-      const lis = commercial.map((r) => `<li>${esc(r)}</li>`).join('');
-      parts.push(
-        `<h3 style="margin:0.75rem 0 0.35rem 0;font-size:0.95rem;color:#f28e2b">Actions commerciales</h3><ul style="margin:0;padding-left:1.25rem">${lis}</ul>`,
-      );
-    }
-    if (rs.strategicSummary?.trim()) {
-      parts.push(
-        `<h3 style="margin:0.75rem 0 0.35rem 0;font-size:0.95rem;color:#e15759">Résumé stratégique</h3><p style="margin:0;white-space:pre-wrap;font-size:0.9rem">${esc(rs.strategicSummary.trim())}</p>`,
-      );
-    }
-    const recs = rs.recommendations ?? [];
-    if (recs.length > 0) {
-      const lis = recs.map((r) => `<li>${esc(r)}</li>`).join('');
-      parts.push(
-        `<h3 style="margin:0.75rem 0 0.35rem 0;font-size:0.95rem;color:#5cb85c">Recommandations</h3><ul style="margin:0;padding-left:1.25rem">${lis}</ul>`,
-      );
-    }
-    if (rs.formulasNote) {
-      parts.push(
-        `<p style="margin-top:1rem;font-size:0.88rem;white-space:pre-wrap;opacity:0.92">${esc(rs.formulasNote)}</p>`,
-      );
-    }
-    parts.push(`</div>`);
-    return parts.join('');
   }
 
   /**
@@ -378,33 +367,48 @@ export class BiAgentService {
    */
   private tryRecoverAnalysisFromMessages(
     messages: BaseMessage[] | unknown[] | undefined,
+    extraText?: string,
   ): BiAnalysisOutput | null {
-    if (!Array.isArray(messages) || messages.length === 0) {
-      return null;
+    const candidates: string[] = [];
+    if (extraText?.trim()) {
+      candidates.push(extraText);
     }
-    for (let i = messages.length - 1; i >= 0; i--) {
-      const msg = messages[i];
-      if (!AIMessage.isInstance(msg)) {
-        continue;
-      }
-      const text = this.messageContentAsText(msg.content);
-      if (!text || text.length < 12) {
-        continue;
-      }
-      try {
-        const obj = extractFirstJsonObject(text);
-        const parsed = biAnalysisOutputSchema.safeParse(obj);
-        if (parsed.success) {
-          this.log.warn(
-            'Sortie structurée phase 1 récupérée depuis le contenu brut du modèle',
-          );
-          return parsed.data;
+    if (Array.isArray(messages) && messages.length > 0) {
+      for (let i = messages.length - 1; i >= 0; i--) {
+        const msg = messages[i];
+        if (!AIMessage.isInstance(msg)) {
+          continue;
         }
-      } catch {
-        /* message précédent */
+        const text = this.messageContentAsText(msg.content);
+        if (text?.trim()) {
+          candidates.push(text);
+        }
+      }
+    }
+    for (const text of candidates) {
+      const parsed = this.parseAnalysisFromModelText(text);
+      if (parsed) {
+        this.log.warn(
+          'Sortie structurée phase 1 récupérée depuis le contenu brut du modèle',
+        );
+        return parsed;
       }
     }
     return null;
+  }
+
+  private streamErrorObservationText(e: unknown): string | undefined {
+    if (!e || typeof e !== 'object') {
+      return undefined;
+    }
+    const o = e as Record<string, unknown>;
+    if (typeof o.observation === 'string' && o.observation.trim()) {
+      return o.observation;
+    }
+    if (typeof o.message === 'string' && o.message.includes('{')) {
+      return o.message;
+    }
+    return undefined;
   }
 
   private buildIntentClassifierModel(settings: RuntimeLlmSettings) {
@@ -596,6 +600,9 @@ export class BiAgentService {
       this.schema,
       input.dataAccess,
       this.biTables,
+      {
+        forecastApiUrl: this.config.get<string>('FORECAST_API_URL'),
+      },
     );
     const agent = createReactAgent({
       llm: model,
@@ -649,15 +656,27 @@ export class BiAgentService {
       await this.persistTurn(input.chatId, input.message, gr);
       return { ...gr, output: this.cleanHtml(gr.html) };
     }
-    const res = (await ctx.agent.invoke(
-      { messages: ctx.baseMessages },
-      { recursionLimit: this.agentRecursionLimit() },
-    )) as { structuredResponse?: BiAnalysisOutput; messages?: unknown[] };
-    let ar = res.structuredResponse;
+    let res: {
+      structuredResponse?: BiAnalysisOutput;
+      messages?: unknown[];
+    };
+    let invokeErrorText: string | undefined;
+    try {
+      res = (await ctx.agent.invoke(
+        { messages: ctx.baseMessages },
+        { recursionLimit: this.agentRecursionLimit() },
+      )) as typeof res;
+    } catch (e) {
+      this.log.warn(`Agent invoke interrompu (${e}), repli JSON phase 1…`);
+      invokeErrorText = this.streamErrorObservationText(e);
+      res = { messages: [] };
+    }
+    let ar = this.finalizeAnalysisOutput(res.structuredResponse);
     if (!ar) {
       ar =
         this.tryRecoverAnalysisFromMessages(
           res.messages as BaseMessage[] | undefined,
+          invokeErrorText,
         ) ?? undefined;
     }
     if (!ar) {
@@ -729,49 +748,63 @@ export class BiAgentService {
       structuredResponse?: BiAnalysisOutput;
     } | null = null;
     let sqlIntentCount = 0;
-    for await (const state of stream) {
-      lastState = state;
-      const msgs = lastState.messages;
-      if (Array.isArray(msgs) && msgs.length < lastIndex) {
-        this.log.warn(
-          'Messages raccourcis dans le stream (rare), resync index',
-        );
-        lastIndex = 0;
-      }
-      if (Array.isArray(msgs) && msgs.length > lastIndex) {
-        for (let i = lastIndex; i < msgs.length; i++) {
-          const m = msgs[i];
-          if (ToolMessage.isInstance(m)) {
-            const name = inferToolNameFromMessage(m);
-            const text =
-              typeof m.content === 'string'
-                ? m.content
-                : JSON.stringify(m.content);
-            const line = humanizeToolResult(name, text);
-            if (line) {
-              yield { t: 'status', m: line };
-            }
-          } else if (
-            AIMessage.isInstance(m) &&
-            m.tool_calls &&
-            m.tool_calls.length > 0
-          ) {
-            const names = m.tool_calls.map((tc) => extractToolCallName(tc));
-            const { line, nextSql } = humanizeToolCallBatch(
-              names,
-              sqlIntentCount,
-            );
-            sqlIntentCount = nextSql;
-            yield { t: 'status', m: line };
-          }
+    let lastStatusLine: string | null = null;
+    let streamErrorText: string | undefined;
+    try {
+      for await (const state of stream) {
+        lastState = state;
+        const msgs = lastState.messages;
+        if (Array.isArray(msgs) && msgs.length < lastIndex) {
+          this.log.warn(
+            'Messages raccourcis dans le stream (rare), resync index',
+          );
+          lastIndex = 0;
         }
-        lastIndex = msgs.length;
+        if (Array.isArray(msgs) && msgs.length > lastIndex) {
+          for (let i = lastIndex; i < msgs.length; i++) {
+            const m = msgs[i];
+            if (ToolMessage.isInstance(m)) {
+              const name = inferToolNameFromMessage(m);
+              const text =
+                typeof m.content === 'string'
+                  ? m.content
+                  : JSON.stringify(m.content);
+              const line = humanizeToolResult(name, text);
+              if (line && line !== lastStatusLine) {
+                lastStatusLine = line;
+                yield { t: 'status', m: line };
+              }
+            } else if (
+              AIMessage.isInstance(m) &&
+              m.tool_calls &&
+              m.tool_calls.length > 0
+            ) {
+              const names = m.tool_calls.map((tc) => extractToolCallName(tc));
+              const { line, nextSql } = humanizeToolCallBatch(
+                names,
+                sqlIntentCount,
+              );
+              sqlIntentCount = nextSql;
+              if (line !== lastStatusLine) {
+                lastStatusLine = line;
+                yield { t: 'status', m: line };
+              }
+            }
+          }
+          lastIndex = msgs.length;
+        }
       }
+    } catch (e) {
+      this.log.warn(`Stream agent interrompu (${e}), repli JSON phase 1…`);
+      streamErrorText = this.streamErrorObservationText(e);
     }
-    let ar = lastState?.structuredResponse;
+    let ar = this.finalizeAnalysisOutput(lastState?.structuredResponse);
     if (!ar) {
       ar =
-        this.tryRecoverAnalysisFromMessages(lastState?.messages) ?? undefined;
+        this.tryRecoverAnalysisFromMessages(
+          lastState?.messages,
+          streamErrorText,
+        ) ?? undefined;
     }
     if (!ar) {
       this.log.error(
@@ -783,11 +816,9 @@ export class BiAgentService {
     }
     yield {
       t: 'status',
-      m:
-        responseMode === 'quick'
-          ? 'Mise en forme HTML (mode rapide)…'
-          : 'Mise en forme HTML (graphiques, tableau)…',
+      m: htmlRenderPhaseStatusLine(responseMode),
     };
+    await new Promise<void>((resolve) => setImmediate(resolve));
     const llmSettings = await this.resolveRuntimeLlmSettings();
     const htmlPart = await this.runHtmlRenderPhase(
       ar,

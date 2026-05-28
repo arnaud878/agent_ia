@@ -34,13 +34,14 @@ Les colonnes sont enrichies (types, nullabilité, clés primaires, clés étrang
 
 ## 3. Outils (tools) exposés à l’agent
 
-Trois outils LangChain sont assemblés dans `buildBiTools` :
+Quatre outils LangChain sont assemblés dans `buildBiTools` :
 
 | Outil         | Rôle |
 |---------------|------|
 | **SQLExecutor** | Exécute une requête `sql_query` sur PostgreSQL. Le backend impose une **sélection en lecture seule** (voir section suivante) et un **plafond de résultat** (voir ci-dessous). Le résultat (lignes, nombre de lignes, avertissements) est renvoyé en JSON texte à l’agent. |
 | **Think**     | Aide le modèle à **structurer** son raisonnement (notes courtes) ; ne modifie pas la base. |
 | **calculator** | Évalue une **expression arithmétique** restreinte (`+ - * /` et parenthèses, caractères dangereux filtrés, longueur plafonnée). |
+| **Forecast**  | Appelle l’API externe de prévision (`FORECAST_API_URL`, défaut Render) : modèles `prophet`, `arima` ou `auto`, avec intervalles de confiance. L’agent doit d’abord charger l’historique via SQL. |
 
 Ainsi, l’**agent ne parle pas directement** au pool de la base BI : toute requête passe par l’outil **SQLExecutor**, qui applique des garde-fous côté serveur.
 
@@ -109,7 +110,7 @@ flowchart TD
   D --> D1[Recharger l’historique n8n_chat_histories_v6 / session_id=chatId]
   D1 --> E[Charger schéma BDD + formules KPI]
   E --> F[Construire prompt système: static + JSON schéma + KPI]
-  F --> G[ChatGoogleGenerativeAI + outils: SQLExecutor, Think, calculator]
+  F --> G[ChatGoogleGenerativeAI + outils: SQLExecutor, Think, calculator, Forecast]
   G --> H[Boucle agent: messages = historique + tour courant, raisonne, outils, résultats]
   H --> I{Sortie structurée Zod remplie ?}
   I -->|Non| J[500 Sortie structurée manquante]
@@ -137,6 +138,7 @@ flowchart LR
 | `DATABASE_URL`      | Base **application** (IAM, rôles, conversations, `n8n_chat_histories_v6`) |
 | `GOOGLE_API_KEY`    | Clé API Google (Gemini) |
 | `GEMINI_MODEL`      | Nom du modèle (ex. `gemini-3-flash-preview`) |
+| `FORECAST_API_URL`  | URL POST de l’API Forecast (défaut : service Render public) |
 | `API_CONFIG_SECRET` | Secret partagé pour l’en-tête `x-api-config` sur le webhook |
 | `PORT`              | Port d’écoute du serveur (défaut 3000) |
 | `CHAT_HISTORY_MAX_MESSAGES` | Nombre max de **messages** (lignes user/assistant) déjà enregistrés à recharger via `n8n_chat_histories_v6` pour le même `session_id` (`chatId`) — ex. 3 ou 4 (défaut 4) |
